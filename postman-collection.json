@@ -1,0 +1,157 @@
+{
+  "info": {
+    "name": "SW Safe Docs API",
+    "description": "Colección para probar la API de documentos seguros",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "TU_TOKEN_JWT_AQUI",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Get Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "me"]
+            }
+          }
+        },
+        {
+          "name": "Generate Share Token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"documentId\": \"123e4567-e89b-12d3-a456-426614174000\",\n  \"expiresInHours\": 24,\n  \"maxUses\": 5,\n  \"allowedIPs\": [\"192.168.1.1\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/share-document",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "share-document"]
+            }
+          }
+        },
+        {
+          "name": "Admin Users",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/admin/users",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "admin", "users"]
+            }
+          }
+        },
+        {
+          "name": "Revoke Share Token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/revoke-share/TOKEN_A_REVOCAR",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "revoke-share", "TOKEN_A_REVOCAR"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Documents",
+      "item": [
+        {
+          "name": "Get My Documents",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/documentos",
+              "host": ["{{baseUrl}}"],
+              "path": ["documentos"]
+            }
+          }
+        },
+        {
+          "name": "Create Document",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Mi documento de prueba\",\n  \"content\": \"Contenido del documento\",\n  \"type\": \"identity\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/documentos",
+              "host": ["{{baseUrl}}"],
+              "path": ["documentos"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
