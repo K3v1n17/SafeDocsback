@@ -7,27 +7,37 @@ export class SupabaseAuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
-    const authHeader = request.headers.authorization;
+    const token = this.extractTokenFromHeader(request);
 
-    if (!authHeader) {
-      throw new UnauthorizedException('No authorization header provided');
+    if (!token) {
+      throw new UnauthorizedException('Token no encontrado');
     }
 
-    const token = authHeader.replace('Bearer ', '');
-    
     try {
       const supabase = this.supabaseService.getClient();
-      const { data: { user }, error } = await supabase.auth.getUser(token);
+      const { data, error } = await supabase.auth.getUser(token);
 
-      if (error || !user) {
-        throw new UnauthorizedException('Invalid token');
+      if (error || !data.user) {
+        throw new UnauthorizedException('Token inválido');
       }
 
-      // Attach user to request for use in controllers
-      request.user = user;
+      // Simplificar el objeto user para evitar conflictos de tipos
+      request.user = {
+        id: data.user.id,
+        email: data.user.email,
+        created_at: data.user.created_at,
+        updated_at: data.user.updated_at,
+        user_metadata: data.user.user_metadata
+      };
+      
       return true;
     } catch (error) {
-      throw new UnauthorizedException('Token verification failed');
+      throw new UnauthorizedException('Error de autenticación');
     }
+  }
+
+  private extractTokenFromHeader(request: any): string | undefined {
+    const [type, token] = request.headers.authorization?.split(' ') ?? [];
+    return type === 'Bearer' ? token : undefined;
   }
 }

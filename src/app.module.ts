@@ -10,8 +10,8 @@ import { AuthModule } from './auth/auth.module';
     ConfigModule.forRoot({
       isGlobal: true,
     }),
-    DocumentosModule,
     AuthModule,
+    DocumentosModule,
   ],
   controllers: [AppController],
   providers: [AppService],

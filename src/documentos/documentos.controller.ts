@@ -12,7 +12,7 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
-  ForbiddenException
+  BadRequestException
 } from '@nestjs/common';
 import { DocumentosService } from './documentos.service';
 import { CreateDocumentoDto } from './dto/create-documento.dto';
@@ -32,27 +32,27 @@ export class DocumentosController {
     @Body(ValidationPipe) createDocumentoDto: CreateDocumentoDto,
     @CurrentUser() user: SupabaseUser
   ) {
-    // Asegurar que el owner_id sea del usuario autenticado
+    // Solo asegurar que el owner_id sea del usuario autenticado
+    // Supabase RLS se encarga del resto de permisos
     createDocumentoDto.owner_id = user.id;
     return this.documentosService.create(createDocumentoDto);
   }
 
   @Get()
   findAll(@CurrentUser() user: SupabaseUser) {
-    // Solo retornar documentos del usuario autenticado
-    return this.documentosService.findByOwner(user.id);
+    // El token JWT automáticamente determina qué documentos puede ver:
+    // - Si es admin: ve todos los documentos
+    // - Si es owner: ve solo sus documentos
+    // - Si es auditor: ve metadatos de todos
+    // - Si es recipient: ve solo documentos compartidos con él
+    return this.documentosService.findAll();
   }
 
-  @Get('owner/:ownerId')
-  findByOwner(
-    @Param('ownerId', ParseUUIDPipe) ownerId: string,
-    @CurrentUser() user: SupabaseUser
-  ) {
-    // Solo permitir ver documentos propios
-    if (ownerId !== user.id) {
-      throw new ForbiddenException('You can only access your own documents');
-    }
-    return this.documentosService.findByOwner(ownerId);
+  @Get('my-documents')
+  findMyDocuments(@CurrentUser() user: SupabaseUser) {
+    // Endpoint específico para obtener MIS documentos (como propietario)
+    // Usa el user.id del token, no necesita parámetros
+    return this.documentosService.findByOwner(user.id);
   }
 
   @Get('tags')
@@ -60,48 +60,49 @@ export class DocumentosController {
     @Query('tags') tags: string,
     @CurrentUser() user: SupabaseUser
   ) {
+    if (!tags) {
+      throw new BadRequestException('Tags parameter is required');
+    }
     const tagArray = tags.split(',').map(tag => tag.trim());
-    return this.documentosService.findByTagsAndOwner(tagArray, user.id);
+    return this.documentosService.findByTags(tagArray);
+  }
+
+  @Get('search')
+  searchDocuments(
+    @Query('q') query: string,
+    @CurrentUser() user: SupabaseUser
+  ) {
+    // Endpoint para búsqueda futura - por ahora solo devuelve todos
+    // TODO: Implementar búsqueda por título, descripción, etc.
+    return this.documentosService.findAll();
   }
 
   @Get(':id')
-  async findOne(
+  findOne(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: SupabaseUser
   ) {
-    const documento = await this.documentosService.findOne(id);
-    // Verificar que el documento pertenece al usuario
-    if (documento.owner_id !== user.id) {
-      throw new ForbiddenException('You can only access your own documents');
-    }
-    return documento;
+    // Supabase RLS se encarga de verificar permisos
+    return this.documentosService.findOne(id);
   }
 
   @Patch(':id')
-  async update(
+  update(
     @Param('id', ParseUUIDPipe) id: string, 
     @Body(ValidationPipe) updateDocumentoDto: UpdateDocumentoDto,
     @CurrentUser() user: SupabaseUser
   ) {
-    const documento = await this.documentosService.findOne(id);
-    // Verificar que el documento pertenece al usuario
-    if (documento.owner_id !== user.id) {
-      throw new ForbiddenException('You can only modify your own documents');
-    }
+    // Supabase RLS permitirá la actualización solo si el usuario tiene permisos
     return this.documentosService.update(id, updateDocumentoDto);
   }
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async remove(
+  remove(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: SupabaseUser
   ) {
-    const documento = await this.documentosService.findOne(id);
-    // Verificar que el documento pertenece al usuario
-    if (documento.owner_id !== user.id) {
-      throw new ForbiddenException('You can only delete your own documents');
-    }
+    // Supabase RLS permitirá la eliminación solo si el usuario tiene permisos
     return this.documentosService.remove(id);
   }
 
@@ -111,11 +112,17 @@ export class DocumentosController {
     @Body('checksum') checksum: string,
     @CurrentUser() user: SupabaseUser
   ) {
-    const documento = await this.documentosService.findOne(id);
-    // Verificar que el documento pertenece al usuario
-    if (documento.owner_id !== user.id) {
-      throw new ForbiddenException('You can only verify your own documents');
+    if (!checksum) {
+      throw new BadRequestException('Checksum is required');
     }
-    return this.documentosService.verifyChecksum(id, checksum);
+    
+    const isValid = await this.documentosService.verifyChecksum(id, checksum);
+    
+    return {
+      documentId: id,
+      providedChecksum: checksum,
+      isValid,
+      message: isValid ? 'Document integrity verified' : 'Document integrity check failed'
+    };
   }
 }

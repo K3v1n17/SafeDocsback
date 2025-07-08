@@ -11,6 +11,7 @@ export class DocumentosService {
   async create(createDocumentoDto: CreateDocumentoDto): Promise<Documento> {
     const supabase = this.supabaseService.getClient();
     
+    // Supabase RLS verificará automáticamente que el usuario tenga permisos de creación
     const { data, error } = await supabase
       .from('documents')
       .insert([createDocumentoDto])
@@ -24,16 +25,14 @@ export class DocumentosService {
     return data;
   }
 
-  async findAll(userId?: string): Promise<Documento[]> {
+  async findAll(): Promise<Documento[]> {
     const supabase = this.supabaseService.getClient();
     
-    let query = supabase.from('documents').select('*');
-    
-    if (userId) {
-      query = query.eq('owner_id', userId);
-    }
-
-    const { data, error } = await query.order('created_at', { ascending: false });
+    // Supabase RLS se encarga automáticamente de filtrar según el rol del usuario
+    const { data, error } = await supabase
+      .from('documents')
+      .select('*')
+      .order('created_at', { ascending: false });
 
     if (error) {
       throw new BadRequestException(`Error fetching documents: ${error.message}`);
@@ -45,6 +44,7 @@ export class DocumentosService {
   async findOne(id: string): Promise<Documento> {
     const supabase = this.supabaseService.getClient();
     
+    // Supabase RLS verificará automáticamente que el usuario tenga permisos de lectura
     const { data, error } = await supabase
       .from('documents')
       .select('*')
@@ -61,6 +61,7 @@ export class DocumentosService {
   async update(id: string, updateDocumentoDto: UpdateDocumentoDto): Promise<Documento> {
     const supabase = this.supabaseService.getClient();
     
+    // Supabase RLS verificará automáticamente que el usuario tenga permisos de actualización
     const { data, error } = await supabase
       .from('documents')
       .update({ ...updateDocumentoDto, updated_at: new Date() })
@@ -82,6 +83,7 @@ export class DocumentosService {
   async remove(id: string): Promise<void> {
     const supabase = this.supabaseService.getClient();
     
+    // Supabase RLS verificará automáticamente que el usuario tenga permisos de eliminación
     const { error } = await supabase
       .from('documents')
       .delete()
@@ -95,6 +97,7 @@ export class DocumentosService {
   async findByOwner(ownerId: string): Promise<Documento[]> {
     const supabase = this.supabaseService.getClient();
     
+    // Supabase RLS se encarga de verificar si el usuario actual puede ver documentos de este owner
     const { data, error } = await supabase
       .from('documents')
       .select('*')
@@ -111,27 +114,11 @@ export class DocumentosService {
   async findByTags(tags: string[]): Promise<Documento[]> {
     const supabase = this.supabaseService.getClient();
     
+    // Supabase RLS filtrará automáticamente según los permisos del usuario
     const { data, error } = await supabase
       .from('documents')
       .select('*')
       .overlaps('tags', tags)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      throw new BadRequestException(`Error fetching documents by tags: ${error.message}`);
-    }
-
-    return data || [];
-  }
-
-  async findByTagsAndOwner(tags: string[], ownerId: string): Promise<Documento[]> {
-    const supabase = this.supabaseService.getClient();
-    
-    const { data, error } = await supabase
-      .from('documents')
-      .select('*')
-      .overlaps('tags', tags)
-      .eq('owner_id', ownerId)
       .order('created_at', { ascending: false });
 
     if (error) {
