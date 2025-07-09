@@ -1,9 +1,28 @@
-import { Controller, Get, Post, Body, UseGuards, Req, ValidationPipe, HttpCode, HttpStatus } from '@nestjs/common';
+import { 
+  Controller, 
+  Post, 
+  Get, 
+  Body, 
+  ValidationPipe,
+  HttpCode,
+  HttpStatus,
+  UseGuards,
+  Req,
+  BadRequestException,
+  UnauthorizedException,
+  InternalServerErrorException
+} from '@nestjs/common';
+import { Request } from 'express';
+import { SupabaseService } from '../supabase/supabase.service';
 import { SupabaseAuthGuard } from './supabase-auth.guard';
 import { CurrentUser } from './current-user.decorator';
 import { SupabaseUser } from './supabase-user.interface';
-import { SupabaseService } from '../supabase/supabase.service';
-import { LoginDto, RegisterDto, RefreshTokenDto } from './dto/auth.dto';
+import { 
+  LoginDto, 
+  RegisterDto, 
+  RefreshTokenDto, 
+  ForgotPasswordDto 
+} from './dto/auth.dto';
 
 interface AuthResponse {
   success: boolean;
@@ -16,131 +35,6 @@ interface AuthResponse {
 export class AuthController {
   constructor(private supabaseService: SupabaseService) {}
 
-  @Get('me')
-  @UseGuards(SupabaseAuthGuard)
-  async getProfile(@CurrentUser() user: SupabaseUser, @Req() request: any) {
-    // Obtener el rol del usuario desde la base de datos
-    const userRole = await this.getUserRole(user.id, request);
-    
-    return {
-      id: user.id,
-      email: user.email,
-      fullName: user.user_metadata?.full_name,
-      role: userRole,
-      status: userRole ? 'active' : 'pending_role_assignment',
-      message: userRole ? 'Usuario activo' : 'Pendiente de asignación de rol',
-      createdAt: user.created_at,
-      updatedAt: user.updated_at
-    };
-  }
-
-  // 🔐 Solo endpoints admin para gestionar roles
-  @Post('admin/assign-role')
-  @UseGuards(SupabaseAuthGuard)
-  async assignRole(
-    @Body() body: { userId: string; role: string },
-    @CurrentUser() user: SupabaseUser,
-    @Req() request: any
-  ) {
-    const userRole = await this.getUserRole(user.id, request);
-    
-    if (userRole !== 'admin') {
-      return {
-        error: 'Acceso denegado',
-        message: 'Solo administradores pueden asignar roles'
-      };
-    }
-    
-    const validRoles = ['owner', 'admin', 'auditor', 'recipient'];
-    if (!validRoles.includes(body.role)) {
-      return {
-        error: 'Rol inválido',
-        message: 'Los roles válidos son: ' + validRoles.join(', ')
-      };
-    }
-    
-    try {
-      // 🔑 Usar cliente autenticado en lugar del cliente anónimo
-      const [type, token] = request.headers.authorization.split(' ');
-      const supabase = this.supabaseService.getClientWithAuth(token);
-      
-      const { error } = await supabase
-        .from('user_roles')
-        .insert({
-          user_id: body.userId,
-          role: body.role
-        });
-      
-      if (error) {
-        return {
-          error: 'Error al asignar rol',
-          message: error.message
-        };
-      }
-      
-      return {
-        message: 'Rol asignado exitosamente',
-        userId: body.userId,
-        role: body.role
-      };
-    } catch (error) {
-      return {
-        error: 'Error al asignar rol',
-        message: error.message
-      };
-    }
-  }
-
-  @Get('admin/users')
-  @UseGuards(SupabaseAuthGuard)
-  async getAllUsers(@CurrentUser() user: SupabaseUser, @Req() request: any) {
-    const userRole = await this.getUserRole(user.id, request);
-    
-    if (userRole !== 'admin') {
-      return {
-        error: 'Acceso denegado',
-        message: 'Solo administradores pueden ver todos los usuarios'
-      };
-    }
-    
-    try {
-      // 🔑 Usar cliente autenticado
-      const [type, token] = request.headers.authorization.split(' ');
-      const supabase = this.supabaseService.getClientWithAuth(token);
-      
-      const { data: userRoles, error } = await supabase
-        .from('user_roles')
-        .select('user_id, role, created_at, updated_at');
-      
-      if (error) {
-        return {
-          error: 'Error al obtener usuarios',
-          message: error.message
-        };
-      }
-      
-      const users = userRoles?.map(ur => ({
-        id: ur.user_id,
-        role: ur.role,
-        roleAssignedAt: ur.created_at,
-        roleUpdatedAt: ur.updated_at,
-        isCurrentUser: ur.user_id === user.id
-      })) || [];
-      
-      return {
-        message: 'Usuarios con roles asignados',
-        count: users.length,
-        users: users
-      };
-    } catch (error) {
-      return {
-        error: 'Error al obtener usuarios',
-        message: error.message
-      };
-    }
-  }
-
-  // 🔐 NUEVO: Endpoint de Login
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(@Body(ValidationPipe) loginDto: LoginDto): Promise<AuthResponse> {
@@ -154,6 +48,7 @@ export class AuthController {
       });
 
       if (error) {
+        // Log del error para debugging (sin exponer detalles al frontend)
         console.error('Login error:', error.message);
         
         // Mapear errores comunes a mensajes amigables
@@ -192,7 +87,7 @@ export class AuthController {
             email: data.user.email,
             username: data.user.user_metadata?.username,
             name: data.user.user_metadata?.name || data.user.user_metadata?.full_name,
-            role: userRole || 'owner',
+            role: userRole || 'owner', // Rol por defecto
             created_at: data.user.created_at,
             updated_at: data.user.updated_at || data.user.created_at,
             email_confirmed: data.user.email_confirmed_at ? true : false,
@@ -214,7 +109,6 @@ export class AuthController {
     }
   }
 
-  // 🔐 NUEVO: Endpoint de Register
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
   async register(@Body(ValidationPipe) registerDto: RegisterDto): Promise<AuthResponse> {
@@ -271,10 +165,10 @@ export class AuthController {
             email: data.user.email,
             username: registerDto.username,
             name: registerDto.name,
-            role: 'owner',
+            role: 'owner', // Rol por defecto
             created_at: data.user.created_at,
             updated_at: data.user.updated_at || data.user.created_at,
-            email_confirmed: false,
+            email_confirmed: false, // Siempre false en registro inicial
           },
           session: data.session ? {
             access_token: data.session.access_token,
@@ -294,7 +188,35 @@ export class AuthController {
     }
   }
 
-  // 🔐 NUEVO: Endpoint de Refresh Token
+  @Get('me')
+  @UseGuards(SupabaseAuthGuard)
+  async getCurrentUser(@CurrentUser() user: SupabaseUser): Promise<AuthResponse> {
+    try {
+      // Obtener información adicional del usuario
+      const userRole = await this.getUserRole(user.id);
+      
+      return {
+        success: true,
+        data: {
+          id: user.id,
+          email: user.email,
+          username: user.user_metadata?.username,
+          name: user.user_metadata?.name || user.user_metadata?.full_name,
+          role: userRole || 'owner',
+          created_at: user.created_at,
+          updated_at: user.updated_at,
+          email_confirmed: true, // Si llegó aquí, el token es válido
+        }
+      };
+    } catch (error) {
+      console.error('Get user error:', error);
+      return {
+        success: false,
+        error: 'Error obteniendo información del usuario'
+      };
+    }
+  }
+
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   async refreshToken(@Body(ValidationPipe) refreshDto: RefreshTokenDto): Promise<AuthResponse> {
@@ -351,7 +273,6 @@ export class AuthController {
     }
   }
 
-  // 🔐 NUEVO: Endpoint de Logout
   @Post('logout')
   @UseGuards(SupabaseAuthGuard)
   @HttpCode(HttpStatus.OK)
@@ -375,9 +296,59 @@ export class AuthController {
     }
   }
 
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  async forgotPassword(@Body(ValidationPipe) forgotDto: ForgotPasswordDto): Promise<AuthResponse> {
+    try {
+      const supabase = this.supabaseService.getClient();
+      
+      const { error } = await supabase.auth.resetPasswordForEmail(forgotDto.email, {
+        redirectTo: `${process.env.FRONTEND_URL}/reset-password`
+      });
+
+      if (error) {
+        console.error('Forgot password error:', error.message);
+        // No revelamos si el email existe o no por seguridad
+      }
+
+      return {
+        success: true,
+        message: 'Si el email existe, recibirás instrucciones para restablecer tu contraseña'
+      };
+    } catch (error) {
+      console.error('Forgot password internal error:', error);
+      return {
+        success: false,
+        error: 'Error interno del servidor'
+      };
+    }
+  }
+
   // ===========================================
-  // MÉTODOS HELPER ADICIONALES
+  // MÉTODOS HELPER PRIVADOS
   // ===========================================
+
+  private async getUserRole(userId: string): Promise<string | null> {
+    try {
+      const supabase = this.supabaseService.getClient();
+      
+      const { data, error } = await supabase
+        .from('user_roles')
+        .select('role')
+        .eq('user_id', userId)
+        .single();
+
+      if (error) {
+        console.log('No role found for user:', userId);
+        return null;
+      }
+
+      return data?.role || null;
+    } catch (error) {
+      console.error('Error getting user role:', error);
+      return null;
+    }
+  }
 
   private async ensureUserProfile(user: any): Promise<void> {
     try {
@@ -437,73 +408,6 @@ export class AuthController {
         }]);
     } catch (error) {
       console.error('Error assigning default role:', error);
-    }
-  }
-
-  private async getUserRole(userId: string, request?: any): Promise<string | null> {
-    try {
-      console.log(`🔍 Getting role for user: ${userId}`);
-      
-      // 🔑 Extraer token del request si está disponible
-      let supabase = this.supabaseService.getClient();
-      
-      if (request?.headers?.authorization) {
-        const [type, token] = request.headers.authorization.split(' ');
-        if (type === 'Bearer' && token) {
-          console.log('🔑 Using authenticated client with token');
-          supabase = this.supabaseService.getClientWithAuth(token);
-        }
-      }
-      
-      console.log('📡 Supabase client initialized');
-      
-      // 🔍 Verificar el usuario autenticado actual
-      const { data: { user }, error: authError } = await supabase.auth.getUser();
-      console.log('👤 Current authenticated user:', {
-        id: user?.id,
-        email: user?.email,
-        searching_for: userId,
-        is_same_user: user?.id === userId
-      });
-      
-      if (authError) {
-        console.error('❌ Auth error:', authError);
-      }
-      
-      // 🔍 Consulta directa con más logging
-      console.log('📊 Executing query on user_roles...');
-      const { data, error } = await supabase
-        .from('user_roles')
-        .select('*') // Seleccionar todo para ver qué devuelve
-        .eq('user_id', userId);
-      
-      console.log('📋 Query result:', { data, error });
-      
-      if (error) {
-        console.error('❌ Error getting user role:', error);
-        return null;
-      }
-      
-      if (!data || data.length === 0) {
-        console.log(`⚠️ No role found for user: ${userId}`);
-        console.log('🔍 Available roles in DB (first 5):');
-        
-        // Consultar todos los roles para ver si hay alguno
-        const { data: allRoles } = await supabase
-          .from('user_roles')
-          .select('user_id, role')
-          .limit(5);
-        
-        console.log('Available roles:', allRoles);
-        return null;
-      }
-      
-      const role = data[0].role;
-      console.log(`✅ Role found for user ${userId}: ${role}`);
-      return role;
-    } catch (error) {
-      console.error('💥 Exception getting user role:', error);
-      return null;
     }
   }
 }
