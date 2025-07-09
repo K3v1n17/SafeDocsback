@@ -13,12 +13,16 @@ import {
   HttpStatus,
   UseGuards,
   BadRequestException,
-  Req
+  Req,
+  UploadedFile,
+  UseInterceptors
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { Request } from 'express';
 import { DocumentosService } from './documentos.service';
 import { CreateDocumentoDto } from './dto/create-documento.dto';
 import { UpdateDocumentoDto } from './dto/update-documento.dto';
+import { UploadDocumentDto } from './dto/upload-documento.dto';
 import { SupabaseAuthGuard } from '../auth/supabase-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { SupabaseUser } from '../auth/supabase-user.interface';
@@ -57,6 +61,76 @@ export class DocumentosController {
     const token = this.extractTokenFromRequest(req);
     return this.documentosService.findAll(token);
   }
+
+
+
+  @Post('upload')
+  @UseInterceptors(FileInterceptor('file'))
+  @HttpCode(HttpStatus.CREATED)
+  async uploadDocument(
+    @UploadedFile() file: any,
+    @Body(ValidationPipe) uploadData: UploadDocumentDto,
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    if (!file) {
+      throw new BadRequestException('No file uploaded');
+    }
+
+    // Validar tipo de archivo
+    const allowedMimeTypes = [
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'text/plain',
+      'image/jpeg',
+      'image/png',
+      'image/gif'
+    ];
+
+    if (!allowedMimeTypes.includes(file.mimetype)) {
+      throw new BadRequestException('File type not allowed');
+    }
+
+    // Validar tamaño del archivo (10MB máximo)
+    const maxSize = 10 * 1024 * 1024; // 10MB
+    if (file.size > maxSize) {
+      throw new BadRequestException('File size too large. Maximum 10MB allowed');
+    }
+
+    const token = this.extractTokenFromRequest(req);
+    
+    // Crear el DTO para el servicio usando las propiedades correctas
+    const createDocumentoDto: CreateDocumentoDto = {
+      title: uploadData.title || uploadData.titulo || file.originalname,
+      description: uploadData.description || uploadData.contenido || `Archivo subido: ${file.originalname}`,
+      doc_type: uploadData.doc_type || uploadData.tipo || this.getDocumentTypeFromMime(file.mimetype),
+      tags: uploadData.tags || (uploadData.etiquetas ? JSON.parse(uploadData.etiquetas) : []),
+      owner_id: user.id,
+      mime_type: file.mimetype,
+      file_size: file.size,
+      file_path: '', // Se asignará en el servicio
+      checksum_sha256: '' // Se calculará en el servicio
+    };
+    
+    return this.documentosService.createWithFile(createDocumentoDto, file, token);
+  }
+
+  private getDocumentTypeFromMime(mimeType: string): string {
+    const typeMap = {
+      'application/pdf': 'pdf',
+      'application/msword': 'documento',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'documento',
+      'text/plain': 'texto',
+      'image/jpeg': 'imagen',
+      'image/png': 'imagen',
+      'image/gif': 'imagen'
+    };
+    
+    return typeMap[mimeType] || 'archivo';
+  }
+
+
 
   @Get('my-documents')
   findMyDocuments(@CurrentUser() user: SupabaseUser, @Req() req: Request) {

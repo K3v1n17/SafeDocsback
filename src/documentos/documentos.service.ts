@@ -4,6 +4,8 @@ import { UpdateDocumentoDto } from './dto/update-documento.dto';
 import { SupabaseService } from '../supabase/supabase.service';
 import { Documento } from './entities/documento.entity';
 import { SupabaseUser } from '../auth/supabase-user.interface';
+import * as crypto from 'crypto';
+import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class DocumentosService {
@@ -237,5 +239,127 @@ export class DocumentosService {
   async verifyChecksum(id: string, checksum: string, userToken: string): Promise<boolean> {
     const documento = await this.findOne(id, userToken);
     return documento.checksum_sha256 === checksum;
+  }
+
+  // Función para crear verificación inicial del documento
+  private async createInitialVerification(documentId: string, checksum: string, userId: string, userToken: string): Promise<boolean> {
+    const supabase = this.supabaseService.getClientWithAuth(userToken);
+    
+    try {
+      const initialStatus = 'verified';
+      const initialIntegrity = 100;
+      const initialDetails = [
+        'Documento subido correctamente',
+        'Hash inicial calculado',
+        'Archivo íntegro al momento de subida',
+        'Verificación inicial completada'
+      ];
+
+      const { error } = await supabase
+        .from('document_verifications')
+        .insert({
+          document_id: documentId,
+          run_by: userId,
+          status: initialStatus,
+          integrity_pct: initialIntegrity,
+          hash_checked: checksum,
+          details: initialDetails
+        });
+
+      if (error) {
+        console.error('Error creando verificación inicial:', error);
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      console.error('Error en createInitialVerification:', error);
+      return false;
+    }
+  }
+
+  async createWithFile(
+    createDocumentoDto: CreateDocumentoDto, 
+    file: any, 
+    userToken: string
+  ): Promise<Documento> {
+    const supabase = this.supabaseService.getClientWithAuth(userToken);
+    
+    try {
+      // 1. Generar un nombre único para el archivo (similar al frontend)
+      const safeName = file.originalname.trim().replace(/\s+/g, "_");
+      const filePath = `public/${createDocumentoDto.owner_id}/${Date.now()}_${safeName}`;
+      
+      // 2. Calcular el checksum SHA256 del archivo
+      const checksum = crypto.createHash('sha256').update(file.buffer).digest('hex');
+      
+      // 3. Subir el archivo al storage de Supabase (bucket 'archivos' como en el frontend)
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('archivos')
+        .upload(filePath, file.buffer, {
+          contentType: file.mimetype,
+          upsert: false
+        });
+
+      if (uploadError) {
+        throw new BadRequestException(`Error uploading file: ${uploadError.message}`);
+      }
+
+      // 4. Obtener la URL pública del archivo
+      const { data: publicUrlData } = supabase.storage
+        .from('archivos')
+        .getPublicUrl(filePath);
+
+      // 5. Crear el documento en la base de datos con la información del archivo
+      const documentData = {
+        owner_id: createDocumentoDto.owner_id!,
+        title: createDocumentoDto.title,
+        description: createDocumentoDto.description || null,
+        doc_type: createDocumentoDto.doc_type,
+        tags: createDocumentoDto.tags || [],
+        mime_type: file.mimetype,
+        file_size: file.size,
+        file_path: filePath,
+        ///file_url: publicUrlData.publicUrl,
+        checksum_sha256: checksum,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+
+      const { data, error } = await supabase
+        .from('documents')
+        .insert([documentData])
+        .select()
+        .single();
+
+      if (error) {
+        // Si hay error al crear el documento, eliminar el archivo subido
+        await supabase.storage
+          .from('archivos')
+          .remove([filePath]);
+        
+        throw new BadRequestException(`Error creating document: ${error.message}`);
+      }
+
+      // 6. Crear verificación inicial para el documento
+      if (data?.id) {
+        const verificationCreated = await this.createInitialVerification(
+          data.id, 
+          checksum, 
+          createDocumentoDto.owner_id!, 
+          userToken
+        );
+        if (!verificationCreated) {
+          console.warn(`No se pudo crear la verificación inicial para el documento ${data.id}`);
+        }
+      }
+
+      return data;
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      throw new BadRequestException(`Error processing file upload: ${error.message}`);
+    }
   }
 }
