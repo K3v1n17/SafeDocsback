@@ -1,4 +1,5 @@
-import { Controller, Get, Post, Body, UseGuards, Req, ValidationPipe, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Body, UseGuards, Req, Res, ValidationPipe, HttpCode, HttpStatus } from '@nestjs/common';
+import { Response, Request } from 'express';
 import { SupabaseAuthGuard } from './supabase-auth.guard';
 import { CurrentUser } from './current-user.decorator';
 import { SupabaseUser } from './supabase-user.interface';
@@ -23,14 +24,19 @@ export class AuthController {
     const userRole = await this.getUserRole(user.id, request);
     
     return {
-      id: user.id,
-      email: user.email,
-      fullName: user.user_metadata?.full_name,
-      role: userRole,
-      status: userRole ? 'active' : 'pending_role_assignment',
-      message: userRole ? 'Usuario activo' : 'Pendiente de asignación de rol',
-      createdAt: user.created_at,
-      updatedAt: user.updated_at
+      success: true,
+      data: {
+        user: {
+          id: user.id,
+          email: user.email,
+          fullName: user.user_metadata?.full_name,
+          role: userRole,
+          status: userRole ? 'active' : 'pending_role_assignment',
+          message: userRole ? 'Usuario activo' : 'Pendiente de asignación de rol',
+          createdAt: user.created_at,
+          updatedAt: user.updated_at
+        }
+      }
     };
   }
 
@@ -140,10 +146,13 @@ export class AuthController {
     }
   }
 
-  // 🔐 NUEVO: Endpoint de Login
+  // 🔐 Login con cookies HttpOnly
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  async login(@Body(ValidationPipe) loginDto: LoginDto): Promise<AuthResponse> {
+  async login(
+    @Body(ValidationPipe) loginDto: LoginDto,
+    @Res({ passthrough: true }) response: Response
+  ): Promise<AuthResponse> {
     try {
       const supabase = this.supabaseService.getClient();
       
@@ -177,13 +186,16 @@ export class AuthController {
         };
       }
 
+      // 🍪 Configurar cookies HttpOnly SEGURAS
+      this.setSecureCookies(response, data.session);
+
       // Obtener rol del usuario desde tu base de datos
       const userRole = await this.getUserRole(data.user.id);
 
       // Crear o actualizar el perfil del usuario si no existe
       await this.ensureUserProfile(data.user);
 
-      // Respuesta formateada y segura
+      // ✅ Solo devolver datos del usuario (SIN tokens)
       return {
         success: true,
         data: {
@@ -196,13 +208,8 @@ export class AuthController {
             created_at: data.user.created_at,
             updated_at: data.user.updated_at || data.user.created_at,
             email_confirmed: data.user.email_confirmed_at ? true : false,
-          },
-          session: {
-            access_token: data.session.access_token,
-            refresh_token: data.session.refresh_token,
-            expires_at: data.session.expires_at || 0,
-            expires_in: data.session.expires_in || 3600,
           }
+          // 🚫 NO enviar session en el response body
         }
       };
     } catch (error) {
@@ -214,10 +221,13 @@ export class AuthController {
     }
   }
 
-  // 🔐 NUEVO: Endpoint de Register
+  // 🔐 Register con cookies HttpOnly
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
-  async register(@Body(ValidationPipe) registerDto: RegisterDto): Promise<AuthResponse> {
+  async register(
+    @Body(ValidationPipe) registerDto: RegisterDto,
+    @Res({ passthrough: true }) response: Response
+  ): Promise<AuthResponse> {
     try {
       const supabase = this.supabaseService.getClient();
       
@@ -257,6 +267,11 @@ export class AuthController {
         };
       }
 
+      // 🍪 Si hay sesión (auto-login), configurar cookies
+      if (data.session) {
+        this.setSecureCookies(response, data.session);
+      }
+
       // Crear perfil inicial del usuario
       await this.createUserProfile(data.user, registerDto);
       
@@ -275,13 +290,8 @@ export class AuthController {
             created_at: data.user.created_at,
             updated_at: data.user.updated_at || data.user.created_at,
             email_confirmed: false,
-          },
-          session: data.session ? {
-            access_token: data.session.access_token,
-            refresh_token: data.session.refresh_token,
-            expires_at: data.session.expires_at || 0,
-            expires_in: data.session.expires_in || 3600,
-          } : null,
+          }
+          // 🚫 NO enviar session
         },
         message: 'Registro exitoso. Por favor verifica tu email.'
       };
@@ -294,30 +304,40 @@ export class AuthController {
     }
   }
 
-  // 🔐 NUEVO: Endpoint de Refresh Token
+  // 🔐 Refresh token usando cookies
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  async refreshToken(@Body(ValidationPipe) refreshDto: RefreshTokenDto): Promise<AuthResponse> {
+  async refreshToken(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response
+  ): Promise<AuthResponse> {
     try {
+      // 🍪 Obtener refresh token de cookies
+      const refreshToken = request.cookies?.refresh_token;
+      
+      if (!refreshToken) {
+        return { success: false, error: 'No hay token de refresco' };
+      }
+
       const supabase = this.supabaseService.getClient();
       
       const { data, error } = await supabase.auth.refreshSession({
-        refresh_token: refreshDto.refresh_token
+        refresh_token: refreshToken
       });
 
       if (error) {
-        return {
-          success: false,
-          error: 'Token de refresco inválido'
-        };
+        // 🧹 Limpiar cookies si el refresh falló
+        this.clearSecureCookies(response);
+        return { success: false, error: 'Token de refresco inválido' };
       }
 
       if (!data.user || !data.session) {
-        return {
-          success: false,
-          error: 'Error refrescando sesión'
-        };
+        this.clearSecureCookies(response);
+        return { success: false, error: 'Error refrescando sesión' };
       }
+
+      // 🍪 Actualizar cookies con nuevos tokens
+      this.setSecureCookies(response, data.session);
 
       const userRole = await this.getUserRole(data.user.id);
 
@@ -333,34 +353,23 @@ export class AuthController {
             created_at: data.user.created_at,
             updated_at: data.user.updated_at || data.user.created_at,
             email_confirmed: true,
-          },
-          session: {
-            access_token: data.session.access_token,
-            refresh_token: data.session.refresh_token,
-            expires_at: data.session.expires_at || 0,
-            expires_in: data.session.expires_in || 3600,
           }
         }
       };
     } catch (error) {
       console.error('Refresh token error:', error);
-      return {
-        success: false,
-        error: 'Error interno del servidor'
-      };
+      this.clearSecureCookies(response);
+      return { success: false, error: 'Error interno del servidor' };
     }
   }
 
-  // 🔐 NUEVO: Endpoint de Logout
+  // 🔐 Logout limpiando cookies
   @Post('logout')
-  @UseGuards(SupabaseAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async logout(@CurrentUser() user: SupabaseUser): Promise<AuthResponse> {
+  async logout(@Res({ passthrough: true }) response: Response): Promise<AuthResponse> {
     try {
-      // Aquí puedes agregar lógica adicional como:
-      // - Invalidar tokens en base de datos
-      // - Registrar logout en logs
-      // - Limpiar sesiones activas
+      // 🧹 Limpiar cookies HttpOnly
+      this.clearSecureCookies(response);
       
       return {
         success: true,
@@ -378,6 +387,53 @@ export class AuthController {
   // ===========================================
   // MÉTODOS HELPER ADICIONALES
   // ===========================================
+
+  // 🛡️ Configurar cookies seguras
+  private setSecureCookies(response: Response, session: any): void {
+    const isProduction = process.env.NODE_ENV === 'production';
+    const cookieDomain = process.env.COOKIE_DOMAIN;
+    
+    const cookieOptions = {
+      httpOnly: true,           // 🔒 No accesible desde JavaScript
+      secure: isProduction,     // 🔒 Solo HTTPS en producción
+      sameSite: 'lax' as const, // 🔒 Protección CSRF (lax para desarrollo)
+      path: '/',
+      domain: isProduction && cookieDomain ? cookieDomain : undefined,
+    };
+
+    // Access token (15 minutos)
+    response.cookie('access_token', session.access_token, {
+      ...cookieOptions,
+      maxAge: 15 * 60 * 1000, // 15 minutos
+    });
+
+    // Refresh token (7 días)
+    response.cookie('refresh_token', session.refresh_token, {
+      ...cookieOptions,
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 días
+    });
+
+    console.log('🍪 Cookies seguras configuradas');
+  }
+
+  // 🧹 Limpiar cookies
+  private clearSecureCookies(response: Response): void {
+    const isProduction = process.env.NODE_ENV === 'production';
+    const cookieDomain = process.env.COOKIE_DOMAIN;
+    
+    const cookieOptions = {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: 'lax' as const,
+      path: '/',
+      domain: isProduction && cookieDomain ? cookieDomain : undefined,
+    };
+
+    response.clearCookie('access_token', cookieOptions);
+    response.clearCookie('refresh_token', cookieOptions);
+    
+    console.log('🧹 Cookies limpiadas');
+  }
 
   private async ensureUserProfile(user: any): Promise<void> {
     try {

@@ -33,8 +33,22 @@ export class DocumentosController {
   constructor(private readonly documentosService: DocumentosService) {}
 
   private extractTokenFromRequest(req: Request): string {
+    // 🍪 PRIMERO: Intentar obtener token de cookies HttpOnly
+    const cookieToken = req.cookies?.access_token;
+    if (cookieToken) {
+      console.log('🍪 Token obtenido de cookies en DocumentosController');
+      return cookieToken;
+    }
+
+    // 🔑 FALLBACK: Intentar obtener token del header Authorization (para compatibilidad)
     const [type, token] = req.headers.authorization?.split(' ') ?? [];
-    return type === 'Bearer' ? token : '';
+    if (type === 'Bearer' && token) {
+      console.log('🔑 Token obtenido de Authorization header en DocumentosController');
+      return token;
+    }
+
+    console.log('❌ No token encontrado en DocumentosController');
+    return '';
   }
 
   @Post()
