@@ -23,6 +23,8 @@ import { DocumentosService } from './documentos.service';
 import { CreateDocumentoDto } from './dto/create-documento.dto';
 import { UpdateDocumentoDto } from './dto/update-documento.dto';
 import { UploadDocumentDto } from './dto/upload-documento.dto';
+import { ShareDocumentDto, UnshareDocumentDto } from './dto/share-document.dto';
+import { CreateSecureShareDto } from './dto/create-secure-share.dto';
 import { SupabaseAuthGuard } from '../auth/supabase-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { SupabaseUser } from '../auth/supabase-user.interface';
@@ -235,5 +237,104 @@ export class DocumentosController {
       isValid,
       message: isValid ? 'Document integrity verified' : 'Document integrity check failed'
     };
+  }
+
+  // 🔐 NUEVOS ENDPOINTS PARA COMPARTIR DOCUMENTOS
+
+  @Post(':id/share')
+  @HttpCode(HttpStatus.CREATED)
+  async shareDocument(
+    @Param('id', ParseUUIDPipe) documentId: string,
+    @Body(ValidationPipe) shareDto: { sharedWithUserId: string; expiresAt?: string },
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    const token = this.extractTokenFromRequest(req);
+    return this.documentosService.shareDocument(
+      documentId,
+      shareDto.sharedWithUserId,
+      user.id,
+      token,
+      shareDto.expiresAt
+    );
+  }
+
+  @Delete(':id/share/:userId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async unshareDocument(
+    @Param('id', ParseUUIDPipe) documentId: string,
+    @Param('userId', ParseUUIDPipe) sharedWithUserId: string,
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    const token = this.extractTokenFromRequest(req);
+    return this.documentosService.unshareDocument(documentId, sharedWithUserId, user.id, token);
+  }
+
+  @Get(':id/shares')
+  async getDocumentShares(
+    @Param('id', ParseUUIDPipe) documentId: string,
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    const token = this.extractTokenFromRequest(req);
+    return this.documentosService.getDocumentShares(documentId, user.id, token);
+  }
+
+  @Get('shared-with-me')
+  async getSharedWithMe(
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    const token = this.extractTokenFromRequest(req);
+    return this.documentosService.getSharedWithMe(user.id, token);
+  }
+
+  // 🚀 NUEVOS ENDPOINTS PARA SISTEMA SEGURO DE COMPARTIR
+
+  @Post(':id/secure-share')
+  @HttpCode(HttpStatus.CREATED)
+  async createSecureShare(
+    @Param('id', ParseUUIDPipe) documentId: string,
+    @Body(ValidationPipe) shareDto: {
+      sharedWithUserId: string;
+      title?: string;
+      message?: string;
+      expiresAt?: string;
+    },
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    const token = this.extractTokenFromRequest(req);
+    return this.documentosService.createSecureShare(
+      documentId,
+      shareDto.sharedWithUserId,
+      user.id,
+      token,
+      shareDto.title,
+      shareDto.message,
+      shareDto.expiresAt
+    );
+  }
+
+  @Get('shared/:shareToken')
+  async getSecureSharedDocument(
+    @Param('shareToken') shareToken: string,
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    const token = this.extractTokenFromRequest(req);
+    return this.documentosService.getSecureSharedDocument(shareToken, user.id, token);
+  }
+
+  @Delete('shares/:shareId/revoke')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async revokeShare(
+    @Param('shareId', ParseUUIDPipe) shareId: string,
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    const token = this.extractTokenFromRequest(req);
+    return this.documentosService.revokeShare(shareId, user.id, token);
   }
 }
