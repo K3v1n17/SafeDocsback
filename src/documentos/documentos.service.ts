@@ -236,9 +236,47 @@ export class DocumentosService {
     return data || [];
   }
 
-  async verifyChecksum(id: string, checksum: string, userToken: string): Promise<boolean> {
-    const documento = await this.findOne(id, userToken);
-    return documento.checksum_sha256 === checksum;
+  async verifyChecksum(id: string, userToken: string): Promise<boolean> {
+    const supabase = this.supabaseService.getClientWithAuth(userToken);
+
+    // 1. Obtener el documento para acceder al file_path
+    const { data: documento, error: docError } = await supabase
+      .from('documents')
+      .select('file_path')
+      .eq('id', id)
+      .single();
+    
+    if (docError || !documento) {
+      throw new NotFoundException(`Document with ID ${id} not found`);
+    }
+
+    const { data: verification, error: verificationError } = await supabase
+      .from('document_verifications')
+      .select('hash_checked')
+      .eq('document_id', id)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+
+    if (verificationError || !verification) {
+      throw new NotFoundException(`Checksum verification not found for document ID ${id}`);
+    }
+
+    // 2. Descargar el archivo desde Supabase Storage
+    const { data: fileData, error: fileError } = await supabase.storage
+      .from('archivos')
+      .download(documento.file_path);
+    
+    if (fileError || !fileData) {
+      throw new BadRequestException(`Error downloading file: ${fileError?.message || 'File not found'}`);
+    }
+
+    // 3. Calcular el checksum SHA256 del archivo descargado
+    const buffer = await fileData.arrayBuffer();
+    const documentoChecksum = crypto.createHash('sha256').update(Buffer.from(buffer)).digest('hex');
+
+    // 4. Comparar con el checksum recibido
+    return documentoChecksum === verification[0].hash_checked;
   }
 
   // Función para crear verificación inicial del documento
@@ -321,7 +359,7 @@ export class DocumentosService {
         file_size: file.size,
         file_path: filePath,
         ///file_url: publicUrlData.publicUrl,
-        checksum_sha256: checksum,
+        //checksum_sha256: checksum,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       };

@@ -34,6 +34,6 @@ export class CreateDocumentoDto {
   file_path: string;
 
   @IsString()
-  @IsNotEmpty()
+  //@IsNotEmpty()
   checksum_sha256: string;
 }
