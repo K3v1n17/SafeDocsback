@@ -220,20 +220,15 @@ export class DocumentosController {
   @Post(':id/verify')
   async verifyChecksum(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body('checksum') checksum: string,
     @CurrentUser() user: SupabaseUser,
     @Req() req: Request
   ) {
-    if (!checksum) {
-      throw new BadRequestException('Checksum is required');
-    }
     
     const token = this.extractTokenFromRequest(req);
-    const isValid = await this.documentosService.verifyChecksum(id, checksum, token);
+    const isValid = await this.documentosService.verifyChecksum(id, token);
     
     return {
       documentId: id,
-      providedChecksum: checksum,
       isValid,
       message: isValid ? 'Document integrity verified' : 'Document integrity check failed'
     };

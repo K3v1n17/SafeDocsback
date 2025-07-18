@@ -22,20 +22,17 @@ export class AuthController {
   async getProfile(@CurrentUser() user: SupabaseUser, @Req() request: any) {
     // Obtener el rol del usuario desde la base de datos
     const userRole = await this.getUserRole(user.id, request);
-    
     return {
       success: true,
       data: {
-        user: {
-          id: user.id,
-          email: user.email,
-          fullName: user.user_metadata?.full_name,
-          role: userRole,
-          status: userRole ? 'active' : 'pending_role_assignment',
-          message: userRole ? 'Usuario activo' : 'Pendiente de asignación de rol',
-          createdAt: user.created_at,
-          updatedAt: user.updated_at
-        }
+        id: user.id,
+        email: user.email,
+        fullName: user.user_metadata?.full_name,
+        role: userRole,
+        status: userRole ? 'active' : 'pending_role_assignment',
+        message: userRole ? 'Usuario activo' : 'Pendiente de asignación de rol',
+        createdAt: user.created_at,
+        updatedAt: user.updated_at
       }
     };
   }
