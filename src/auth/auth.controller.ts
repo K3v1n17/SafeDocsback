@@ -22,20 +22,17 @@ export class AuthController {
   async getProfile(@CurrentUser() user: SupabaseUser, @Req() request: any) {
     // Obtener el rol del usuario desde la base de datos
     const userRole = await this.getUserRole(user.id, request);
-    
     return {
       success: true,
       data: {
-        user: {
-          id: user.id,
-          email: user.email,
-          fullName: user.user_metadata?.full_name,
-          role: userRole,
-          status: userRole ? 'active' : 'pending_role_assignment',
-          message: userRole ? 'Usuario activo' : 'Pendiente de asignación de rol',
-          createdAt: user.created_at,
-          updatedAt: user.updated_at
-        }
+        id: user.id,
+        email: user.email,
+        fullName: user.user_metadata?.full_name,
+        role: userRole,
+        status: userRole ? 'active' : 'pending_role_assignment',
+        message: userRole ? 'Usuario activo' : 'Pendiente de asignación de rol',
+        createdAt: user.created_at,
+        updatedAt: user.updated_at
       }
     };
   }
@@ -66,15 +63,27 @@ export class AuthController {
     }
     
     try {
-      // 🔑 Usar cliente autenticado en lugar del cliente anónimo
-      const [type, token] = request.headers.authorization.split(' ');
-      const supabase = this.supabaseService.getClientWithAuth(token);
+      // 🔑 Usar token desde cookies HttpOnly
+      const accessToken = request.cookies?.access_token;
       
+      if (!accessToken) {
+        return {
+          error: 'Token no encontrado',
+          message: 'No se encontró token de acceso en las cookies'
+        };
+      }
+      
+      const supabase = this.supabaseService.getClientWithAuth(accessToken);
+      
+      // 🔄 Usar UPSERT para actualizar o insertar rol
       const { error } = await supabase
         .from('user_roles')
-        .insert({
+        .upsert({
           user_id: body.userId,
-          role: body.role
+          role: body.role,
+          updated_at: new Date()
+        }, {
+          onConflict: 'user_id'
         });
       
       if (error) {
@@ -85,7 +94,7 @@ export class AuthController {
       }
       
       return {
-        message: 'Rol asignado exitosamente',
+        message: 'Rol actualizado exitosamente',
         userId: body.userId,
         role: body.role
       };
@@ -110,10 +119,19 @@ export class AuthController {
     }
     
     try {
-      // 🔑 Usar cliente autenticado
-      const [type, token] = request.headers.authorization.split(' ');
-      const supabase = this.supabaseService.getClientWithAuth(token);
+      // 🔑 Usar token desde cookies HttpOnly
+      const accessToken = request.cookies?.access_token;
       
+      if (!accessToken) {
+        return {
+          error: 'Token no encontrado',
+          message: 'No se encontró token de acceso en las cookies'
+        };
+      }
+      
+      const supabase = this.supabaseService.getClientWithAuth(accessToken);
+      
+      // � 1. Obtener roles de usuarios
       const { data: userRoles, error } = await supabase
         .from('user_roles')
         .select('user_id, role, created_at, updated_at');
@@ -125,13 +143,35 @@ export class AuthController {
         };
       }
       
-      const users = userRoles?.map(ur => ({
-        id: ur.user_id,
-        role: ur.role,
-        roleAssignedAt: ur.created_at,
-        roleUpdatedAt: ur.updated_at,
-        isCurrentUser: ur.user_id === user.id
-      })) || [];
+      // 🔍 2. Obtener perfiles de usuarios
+      const { data: profiles, error: profilesError } = await supabase
+        .from('profiles')
+        .select('user_id, full_name, avatar_url, phone, company');
+      
+      if (profilesError) {
+        return {
+          error: 'Error al obtener perfiles',
+          message: profilesError.message
+        };
+      }
+      
+      // 🔗 3. Hacer match entre roles y perfiles
+      const users = userRoles?.map(ur => {
+        // Buscar el perfil correspondiente
+        const profile = profiles?.find(p => p.user_id === ur.user_id);
+        
+        return {
+          id: ur.user_id,
+          name: profile?.full_name || 'Sin nombre',
+          avatar: profile?.avatar_url,
+          phone: profile?.phone,
+          company: profile?.company,
+          role: ur.role,
+          roleAssignedAt: ur.created_at,
+          roleUpdatedAt: ur.updated_at,
+          isCurrentUser: ur.user_id === user.id
+        };
+      }) || [];
       
       return {
         message: 'Usuarios con roles asignados',
@@ -500,15 +540,13 @@ export class AuthController {
     try {
       console.log(`🔍 Getting role for user: ${userId}`);
       
-      // 🔑 Extraer token del request si está disponible
+      // 🔑 Extraer token desde cookies HttpOnly si está disponible
       let supabase = this.supabaseService.getClient();
       
-      if (request?.headers?.authorization) {
-        const [type, token] = request.headers.authorization.split(' ');
-        if (type === 'Bearer' && token) {
-          console.log('🔑 Using authenticated client with token');
-          supabase = this.supabaseService.getClientWithAuth(token);
-        }
+      if (request?.cookies?.access_token) {
+        const accessToken = request.cookies.access_token;
+        console.log('🔑 Using authenticated client with token from cookies');
+        supabase = this.supabaseService.getClientWithAuth(accessToken);
       }
       
       console.log('📡 Supabase client initialized');

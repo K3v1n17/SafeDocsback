@@ -1,4 +1,29 @@
-import { IsUUID, IsOptional, IsString, IsBoolean } from 'class-validator';
+import { IsUUID, IsOptional, IsString, IsBoolean, IsNumber, IsEnum } from 'class-validator';
+
+// DTO para el endpoint simple-share
+export class SimpleShareDto {
+  @IsUUID()
+  documentId: string;
+
+  @IsUUID()
+  sharedWithUserId: string;
+
+  @IsEnum(['read', 'write', 'admin'])
+  @IsOptional()
+  permissionLevel?: string = 'read';
+
+  @IsNumber()
+  @IsOptional()
+  expiresInHours?: number = 24;
+
+  @IsString()
+  @IsOptional()
+  shareTitle?: string;
+
+  @IsString()
+  @IsOptional()
+  shareMessage?: string;
+}
 
 // DTO adaptado a tu estructura existente de document_shares
 export class CreateShareDto {
