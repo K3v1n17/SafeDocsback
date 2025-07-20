@@ -308,9 +308,9 @@ export class AuthController {
       }
 
       // 🍪 Si hay sesión (auto-login), configurar cookies
-      if (data.session) {
-        this.setSecureCookies(response, data.session);
-      }
+      //if (data.session) {
+      //  this.setSecureCookies(response, data.session);
+      //}
 
       // Crear perfil inicial del usuario
       await this.createUserProfile(data.user, registerDto);
