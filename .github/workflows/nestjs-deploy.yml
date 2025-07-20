@@ -11,30 +11,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📥 Clonar repositorio
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Necesario para SonarCloud
+      steps:
+      - uses: actions/checkout@v4
 
-      - name: 🧰 Configurar Node.js
+      - name: Set up Node.js version
         uses: actions/setup-node@v3
         with:
           node-version: '22.x'
 
-      - name: 📦 Instalar pnpm
-        run: corepack enable && corepack prepare pnpm@latest --activate
-
-      - name: 📥 Instalar dependencias
-        run: pnpm install
-
-      - name: 📦 Instalar Sequelize
-        run: pnpm add @nestjs/sequelize sequelize sequelize-typescript
-
-      - name: ⚙️ Instalar configuración
-        run: pnpm add @nestjs/config
-
-      - name: ✅ Instalar validadores
-        run: pnpm add class-validator class-transformer @nestjs/mapped-types
+      - name: npm install, build, and test
+        run: |
+          npm install
+          npm run build --if-present
+          npm run test --if-present
 
       - name: 🔍 Analizar con SonarCloud
         uses: SonarSource/sonarqube-scan-action@v3
@@ -49,38 +38,34 @@ jobs:
             -Dsonar.sources=src
             -Dsonar.verbose=true
 
-      - name: 🧪 Ejecutar tests
-        run: pnpm test -- --passWithNoTests
+      - name: Zip artifact for deployment
+        run: zip release.zip ./* -r
 
-      - name: 🛠️ Construir aplicación
-        run: pnpm run build
-
-      - name: 📁 Guardar artefactos
-        run: |
-          mkdir deploy
-          cp -r dist package.json pnpm-lock.yaml tsconfig.json deploy/
-
-      - name: 📦 Cargar artefacto
+      - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
         with:
-          name: deploy-folder
-          path: deploy/
-
+          name: node-app
+          path: release.zip      
   cd:
     name: 🚀 Despliegue Continuo (CD)
     needs: ci
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📦 Descargar artefacto
+      - name: Download artifact from build job
         uses: actions/download-artifact@v4
         with:
-          name: deploy-folder
-          path: deploy/
+          name: node-app
 
-      - name: 🚀 Desplegar en Azure App Service (solo contenido)
+      - name: Unzip artifact for deployment
+        run: unzip release.zip
+      
+      - name: 'Deploy to Azure Web App'
+        id: deploy-to-webapp
         uses: azure/webapps-deploy@v3
         with:
           app-name: 'safedocsback'
+          slot-name: 'Production'
+          package: .
           publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
-          package: deploy/
+
