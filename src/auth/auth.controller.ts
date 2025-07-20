@@ -431,16 +431,14 @@ export class AuthController {
   // 🛡️ Configurar cookies seguras
   private setSecureCookies(response: Response, session: any): void {
     const isProduction = process.env.NODE_ENV === 'production';
-    const cookieDomain = isProduction 
-      ? process.env.COOKIE_DOMAIN_PROD 
-      : process.env.COOKIE_DOMAIN;
+    const cookieDomain = process.env.COOKIE_DOMAIN;
     
     const cookieOptions = {
       httpOnly: true,           // 🔒 No accesible desde JavaScript
       secure: isProduction,     // 🔒 Solo HTTPS en producción
-      sameSite: isProduction ? 'none' as const : 'lax' as const, // 🔒 'none' para HTTPS cross-origin
+      sameSite: 'lax' as const, // 🔒 Protección CSRF (lax para desarrollo)
       path: '/',
-      domain: cookieDomain || undefined,
+      domain: isProduction && cookieDomain ? cookieDomain : undefined,
     };
 
     // Access token (15 minutos)
@@ -455,28 +453,26 @@ export class AuthController {
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 días
     });
 
-    console.log(`🍪 Cookies seguras configuradas - Env: ${process.env.NODE_ENV}, Domain: ${cookieDomain}, Secure: ${isProduction}`);
+    console.log('🍪 Cookies seguras configuradas');
   }
 
   // 🧹 Limpiar cookies
   private clearSecureCookies(response: Response): void {
     const isProduction = process.env.NODE_ENV === 'production';
-    const cookieDomain = isProduction 
-      ? process.env.COOKIE_DOMAIN_PROD 
-      : process.env.COOKIE_DOMAIN;
+    const cookieDomain = process.env.COOKIE_DOMAIN;
     
     const cookieOptions = {
       httpOnly: true,
       secure: isProduction,
-      sameSite: isProduction ? 'none' as const : 'lax' as const,
+      sameSite: 'lax' as const,
       path: '/',
-      domain: cookieDomain || undefined,
+      domain: isProduction && cookieDomain ? cookieDomain : undefined,
     };
 
     response.clearCookie('access_token', cookieOptions);
     response.clearCookie('refresh_token', cookieOptions);
     
-    console.log(`🧹 Cookies limpiadas - Env: ${process.env.NODE_ENV}, Domain: ${cookieDomain}`);
+    console.log('🧹 Cookies limpiadas');
   }
 
   private async ensureUserProfile(user: any): Promise<void> {
