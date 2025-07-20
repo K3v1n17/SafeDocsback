@@ -6,37 +6,37 @@ on:
       - main
 
 jobs:
-  build-and-deploy:
+  ci:
+    name: 🧪 Integración Continua (CI)
     runs-on: ubuntu-latest
 
     steps:
-      - name: Clonar repositorio1
+      - name: 📥 Clonar repositorio
         uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Necesario para SonarCloud
 
-      - name: Configurar Node.js
-        uses: actions/setup-node@v4
+      - name: 🧰 Configurar Node.js
+        uses: actions/setup-node@v3
         with:
-          node-version: '22'
-          cache: 'pnpm'
+          node-version: '22.x'
 
-      - name: Instalar pnpm
+      - name: 📦 Instalar pnpm
         run: corepack enable && corepack prepare pnpm@latest --activate
 
-      - name: Instalar dependencias
+      - name: 📥 Instalar dependencias
         run: pnpm install
 
-      - name: Instalar Sequelize
+      - name: 📦 Instalar Sequelize
         run: pnpm add @nestjs/sequelize sequelize sequelize-typescript
 
-      - name: Instalar configuración
+      - name: ⚙️ Instalar configuración
         run: pnpm add @nestjs/config
 
-      - name: Instalar validadores
+      - name: ✅ Instalar validadores
         run: pnpm add class-validator class-transformer @nestjs/mapped-types
 
-      - name: Configurar y analizar con SonarCloud
+      - name: 🔍 Analizar con SonarCloud
         uses: SonarSource/sonarqube-scan-action@v3
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -49,21 +49,39 @@ jobs:
             -Dsonar.sources=src
             -Dsonar.verbose=true
 
-      - name: Ejecutar tests (sin fallar si no hay)
+      - name: 🧪 Ejecutar tests
         run: pnpm test -- --passWithNoTests
 
-      - name: Construir aplicación
+      - name: 🛠️ Construir aplicación
         run: pnpm run build
 
-      - name: Preparar carpeta de despliegue
+      - name: 📁 Guardar artefactos
         run: |
           mkdir deploy
           cp -r dist package.json pnpm-lock.yaml tsconfig.json deploy/
+        # Guardar la carpeta deploy como artefacto
+      - name: 📦 Cargar artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-folder
+          path: deploy/
 
-      - name: Crear archivo zip
+  cd:
+    name: 🚀 Despliegue Continuo (CD)
+    needs: ci
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📦 Descargar artefacto
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-folder
+          path: deploy/
+
+      - name: 📦 Crear archivo zip
         run: zip -r app.zip deploy/
 
-      - name: Desplegar en Azure App Service
+      - name: 🚀 Desplegar en Azure App Service
         uses: azure/webapps-deploy@v3
         with:
           app-name: 'safedocsback'
