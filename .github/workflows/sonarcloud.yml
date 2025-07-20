@@ -44,7 +44,7 @@ jobs:
 
     steps:
       - name: Analyze with SonarCloud
-
+        uses: SonarSource/sonarqube-scan-action@v3
         # You can pin the exact commit or the version.
         # uses: SonarSource/sonarcloud-github-action@v2.2.0
         env:
