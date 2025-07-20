@@ -701,8 +701,13 @@ export class DocumentosService {
     // 4. Registrar la vista
     await this.recordSecureShareView(share.id, viewerUserId, userToken);
 
+    const doc = Array.isArray(share.documents) ? share.documents[0] : share.documents;
+    if (!doc || !doc.file_path) {
+      throw new BadRequestException('Documento no disponible para este usuario');
+    }
+
     // 5. Generar URL firmada temporal para el archivo (si es CDN)
-    const signedFileUrl = await this.generateSignedFileUrl(share.documents[0].file_path);
+    const signedFileUrl = await this.generateSignedFileUrl(userToken, doc.file_path);
 
     return {
       success: true,
@@ -716,30 +721,27 @@ export class DocumentosService {
           expires_at: share.expires_at
         },
         document: {
-          id: share.documents[0].id,
-          titulo: share.documents[0].title, // Campo esperado por frontend
-          contenido: share.documents[0].description,
-          tipo: share.documents[0].doc_type,
-          file_size: share.documents[0].file_size,
-          mime_type: share.documents[0].mime_type,
-          created_at: share.documents[0].created_at,
+          id: doc.id,
+          titulo: doc.title, // Campo esperado por frontend
+          contenido: doc.description,
+          tipo: doc.doc_type,
+          file_size: doc.file_size,
+          mime_type: doc.mime_type,
+          created_at: doc.created_at,
           signed_file_url: signedFileUrl // ✅ URL temporal para descarga/vista
         }
       }
     };
   }
 
-  private async generateSignedFileUrl(filePath: string): Promise<string> {
+  private async generateSignedFileUrl(userToken: string, filePath: string): Promise<string> {
     try {
-      const supabase = this.supabaseService.getClient();
-      
-      // Generar URL firmada de Supabase (válida por 1 hora)
+      const supabase = this.supabaseService.getClientWithAuth(userToken); // ✅ cliente autenticado
       const { data, error } = await supabase.storage
         .from('archivos')
-        .createSignedUrl(filePath, 3600); // 1 hora
+        .createSignedUrl(filePath, 3600);
 
-      if (error) {
-        console.error('Error generating signed URL:', error);
+      if (error || !data?.signedUrl) {
         throw new BadRequestException('Error generating file access URL');
       }
 
