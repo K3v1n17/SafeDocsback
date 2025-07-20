@@ -433,14 +433,31 @@ export class AuthController {
     const isProduction = process.env.NODE_ENV === 'production';
     const cookieDomain = process.env.COOKIE_DOMAIN;
     
-    const cookieOptions = {
+    // 🎯 Configuración específica para Vercel/producción
+    const baseCookieOptions = {
       httpOnly: true,           // 🔒 No accesible desde JavaScript
-      secure: isProduction,     // 🔒 Solo HTTPS en producción
-      sameSite: isProduction ? 'none' as const : 'lax' as const, // 👈 Cambiar a 'none' en producción
-      //sameSite: 'lax' as const, // 🔒 Protección CSRF (lax para desarrollo)
       path: '/',
-      domain: isProduction && cookieDomain ? cookieDomain : undefined,
+      domain: undefined as string | undefined, // � NO usar domain en Vercel
     };
+
+    // �️ Configuración condicional según el entorno
+    const cookieOptions = isProduction ? {
+      ...baseCookieOptions,
+      secure: true,             // � SIEMPRE HTTPS en producción
+      sameSite: 'none' as const, // 🔒 Para dominios cruzados
+    } : {
+      ...baseCookieOptions,
+      secure: false,            // 🔓 HTTP permitido en desarrollo
+      sameSite: 'lax' as const, // 🔒 Más permisivo en desarrollo
+    };
+
+    console.log('🍪 Cookie config:', {
+      isProduction,
+      cookieDomain,
+      secure: cookieOptions.secure,
+      sameSite: cookieOptions.sameSite,
+      domain: cookieOptions.domain
+    });
 
     // Access token (15 minutos)
     response.cookie('access_token', session.access_token, {
@@ -454,7 +471,7 @@ export class AuthController {
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 días
     });
 
-    console.log('🍪 Cookies seguras configuradas');
+    console.log('🍪 Cookies seguras configuradas con opciones:', cookieOptions);
   }
 
   // 🧹 Limpiar cookies
@@ -462,19 +479,27 @@ export class AuthController {
     const isProduction = process.env.NODE_ENV === 'production';
     const cookieDomain = process.env.COOKIE_DOMAIN;
     
-    const cookieOptions = {
+    // 🎯 Misma configuración que setSecureCookies para limpiar correctamente
+    const baseCookieOptions = {
       httpOnly: true,
-      secure: isProduction,
-      sameSite: isProduction ? 'none' as const : 'lax' as const, // 👈 Cambiar a 'none' en producción
-      //sameSite: 'lax' as const,
       path: '/',
-      domain: isProduction && cookieDomain ? cookieDomain : undefined,
+      domain: undefined as string | undefined, // 🚫 NO usar domain en Vercel
+    };
+
+    const cookieOptions = isProduction ? {
+      ...baseCookieOptions,
+      secure: true,
+      sameSite: 'none' as const,
+    } : {
+      ...baseCookieOptions,
+      secure: false,
+      sameSite: 'lax' as const,
     };
 
     response.clearCookie('access_token', cookieOptions);
     response.clearCookie('refresh_token', cookieOptions);
     
-    console.log('🧹 Cookies limpiadas');
+    console.log('🧹 Cookies limpiadas con opciones:', cookieOptions);
   }
 
   private async ensureUserProfile(user: any): Promise<void> {
