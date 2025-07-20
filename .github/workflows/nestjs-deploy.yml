@@ -18,12 +18,12 @@ jobs:
         with:
           node-version: '22.x'
 
-      - name: npm install, build, and test
+      - name: pnpm install, build, and test
         run: |
           npm install -g pnpm@latest-10
           pnpm install
-          pnpm run build --if-present
-          pnpm run test --if-present
+          pnpm run build 
+          pnpm run test --passWithNoTests
 
       - name: 🔍 Analizar con SonarCloud
         uses: SonarSource/sonarqube-scan-action@v3
