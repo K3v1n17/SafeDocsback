@@ -436,7 +436,8 @@ export class AuthController {
     const cookieOptions = {
       httpOnly: true,           // 🔒 No accesible desde JavaScript
       secure: isProduction,     // 🔒 Solo HTTPS en producción
-      sameSite: 'lax' as const, // 🔒 Protección CSRF (lax para desarrollo)
+      sameSite: isProduction ? 'none' as const : 'lax' as const, // 👈 Cambiar a 'none' en producción
+      //sameSite: 'lax' as const, // 🔒 Protección CSRF (lax para desarrollo)
       path: '/',
       domain: isProduction && cookieDomain ? cookieDomain : undefined,
     };
@@ -464,7 +465,8 @@ export class AuthController {
     const cookieOptions = {
       httpOnly: true,
       secure: isProduction,
-      sameSite: 'lax' as const,
+      sameSite: isProduction ? 'none' as const : 'lax' as const, // 👈 Cambiar a 'none' en producción
+      //sameSite: 'lax' as const,
       path: '/',
       domain: isProduction && cookieDomain ? cookieDomain : undefined,
     };
