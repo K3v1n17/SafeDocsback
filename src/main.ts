@@ -48,7 +48,14 @@ async function bootstrap() {
       
       // Verificar si el origin está en la lista de permitidos
       if (allowedOrigins.includes(origin)) {
-        console.log(`✅ CORS: Origin '${origin}' allowed`);
+        console.log(`✅ CORS: Origin '${origin}' allowed (exact match)`);
+        return callback(null, true);
+      }
+      
+      // 🎯 Permitir dominios de Vercel automáticamente
+      const isVercelDomain = /^https:\/\/safedocs(-[\w\d-]+)?(-[\w\d]+)?\.vercel\.app$/;
+      if (isVercelDomain.test(origin)) {
+        console.log(`✅ CORS: Vercel domain '${origin}' allowed`);
         return callback(null, true);
       }
       
@@ -62,6 +69,7 @@ async function bootstrap() {
       }
       
       console.warn(`🚫 CORS: Origin '${origin}' not allowed. Allowed origins:`, allowedOrigins);
+      console.warn(`🔍 Origin pattern check - Vercel: ${isVercelDomain.test(origin)}`);
       return callback(new Error('Not allowed by CORS'));
     },
     credentials: true, // 🍪 Permitir cookies en requests CORS
