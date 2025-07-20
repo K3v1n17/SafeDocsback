@@ -33,9 +33,6 @@ jobs:
       - name: Instalar configuración
         run: pnpm add @nestjs/config
 
-      - name: Instalar dependencias de base de datos
-        run: pnpm add pg pg-hstore
-
       - name: Instalar validadores
         run: pnpm add class-validator class-transformer @nestjs/mapped-types
 
