@@ -48,11 +48,7 @@ export class DocumentosController {
     }
 
     console.log('❌ No token encontrado en DocumentosController');
-    console.log('🔍 Available cookies:', Object.keys(req.cookies || {}));
-    console.log('🔍 Authorization header:', req.headers.authorization ? 'Present' : 'Missing');
-    console.log('🔍 Cookie header:', req.headers.cookie ? 'Present' : 'Missing');
-    
-    throw new BadRequestException('No authentication token found in cookies or headers');
+    return '';
   }
 
   @Post()
@@ -220,70 +216,24 @@ export class DocumentosController {
   }
 
   @Post(':id/verify')
-  async verifyDocument(
+  async verifyChecksum(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body() body: { checksum?: string } = {},
+    @Body('checksum') checksum: string,
     @CurrentUser() user: SupabaseUser,
     @Req() req: Request
   ) {
-    console.log('🔍 Verify endpoint called:', {
-      documentId: id,
-      userId: user.id,
-      hasChecksum: !!body.checksum,
-      body,
-      cookies: req.cookies,
-      hasAuthHeader: !!req.headers.authorization
-    });
-
-    const token = this.extractTokenFromRequest(req);
+    if (!checksum) {
+      throw new BadRequestException('Checksum is required');
+    }
     
-    if (!token) {
-      console.log('❌ No token found in verify endpoint');
-      throw new BadRequestException('Authentication token required');
-    }
-
-    try {
-      // 🔍 Si se proporciona checksum, verificar contra él
-      if (body.checksum) {
-        const isValid = await this.documentosService.verifyChecksum(id, body.checksum, token);
-        return {
-          documentId: id,
-          providedChecksum: body.checksum,
-          isValid,
-          message: isValid ? 'Document integrity verified' : 'Document integrity check failed'
-        };
-      }
-
-      // 🔍 Si no se proporciona checksum, ejecutar verificación completa
-      const verificationResult = await this.documentosService.performFullVerification(id, user.id, token);
-      return {
-        documentId: id,
-        verification: verificationResult,
-        message: 'Document verification completed'
-      };
-    } catch (error) {
-      console.error('❌ Error in verify endpoint:', error);
-      throw new BadRequestException(`Verification failed: ${error.message}`);
-    }
-  }
-
-  // 🔍 Endpoint de diagnóstico para debugging de cookies
-  @Get('debug/auth')
-  async debugAuth(@Req() req: Request, @CurrentUser() user: SupabaseUser) {
+    const token = this.extractTokenFromRequest(req);
+    const isValid = await this.documentosService.verifyChecksum(id, checksum, token);
+    
     return {
-      success: true,
-      debug: {
-        userId: user.id,
-        userEmail: user.email,
-        hasCookies: !!req.cookies,
-        cookieKeys: Object.keys(req.cookies || {}),
-        hasAccessTokenCookie: !!req.cookies?.access_token,
-        hasRefreshTokenCookie: !!req.cookies?.refresh_token,
-        hasAuthHeader: !!req.headers.authorization,
-        origin: req.headers.origin,
-        userAgent: req.headers['user-agent'],
-        timestamp: new Date()
-      }
+      documentId: id,
+      providedChecksum: checksum,
+      isValid,
+      message: isValid ? 'Document integrity verified' : 'Document integrity check failed'
     };
   }
 }
