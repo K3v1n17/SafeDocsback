@@ -57,14 +57,17 @@ jobs:
 
       - name: 📁 Guardar artefactos
         run: |
-          mkdir deploy
-          cp -r dist package.json pnpm-lock.yaml tsconfig.json deploy/
-        # Guardar la carpeta deploy como artefacto
+          cp -r dist package.json pnpm-lock.yaml tsconfig.json ./
+
       - name: 📦 Cargar artefacto
         uses: actions/upload-artifact@v4
         with:
           name: deploy-folder
-          path: deploy/
+          path: |
+            dist/
+            package.json
+            pnpm-lock.yaml
+            tsconfig.json
 
   cd:
     name: 🚀 Despliegue Continuo (CD)
@@ -76,10 +79,10 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: deploy-folder
-          path: deploy/
+          path: .
 
       - name: 📦 Crear archivo zip
-        run: zip -r app.zip deploy/
+        run: zip -r app.zip dist package.json pnpm-lock.yaml tsconfig.json
 
       - name: 🚀 Desplegar en Azure App Service
         uses: azure/webapps-deploy@v3
