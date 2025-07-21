@@ -23,6 +23,8 @@ import { DocumentosService } from './documentos.service';
 import { CreateDocumentoDto } from './dto/create-documento.dto';
 import { UpdateDocumentoDto } from './dto/update-documento.dto';
 import { UploadDocumentDto } from './dto/upload-documento.dto';
+import { ShareDocumentDto, UnshareDocumentDto } from './dto/share-document.dto';
+import { SimpleShareDto } from './dto/share-document-adapted.dto';
 import { SupabaseAuthGuard } from '../auth/supabase-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { SupabaseUser } from '../auth/supabase-user.interface';
@@ -33,21 +35,21 @@ export class DocumentosController {
   constructor(private readonly documentosService: DocumentosService) {}
 
   private extractTokenFromRequest(req: Request): string {
-    // 🍪 PRIMERO: Intentar obtener token de cookies HttpOnly
+    // 🍪 PRIMERO: Intentar obtener token de cookies HttpOnly (sistema principal)
     const cookieToken = req.cookies?.access_token;
     if (cookieToken) {
-      console.log('🍪 Token obtenido de cookies en DocumentosController');
+      console.log('🍪 Token obtenido de cookies HttpOnly en DocumentosController');
       return cookieToken;
     }
 
-    // 🔑 FALLBACK: Intentar obtener token del header Authorization (para compatibilidad)
+    // 🔑 FALLBACK: Intentar obtener token del header Authorization (para compatibilidad con frontend)
     const [type, token] = req.headers.authorization?.split(' ') ?? [];
     if (type === 'Bearer' && token) {
-      console.log('🔑 Token obtenido de Authorization header en DocumentosController');
+      console.log('🔑 Token obtenido de Authorization header en DocumentosController (fallback)');
       return token;
     }
 
-    console.log('❌ No token encontrado en DocumentosController');
+    console.log('❌ No se encontró token en cookies ni headers en DocumentosController');
     return '';
   }
 
@@ -180,6 +182,63 @@ export class DocumentosController {
     return this.documentosService.findAll(token);
   }
 
+  @Get('shared-with-me')
+  async getSharedWithMe(
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    try {
+      console.log('🔍 User info in getSharedWithMe:', {
+        userId: user.id,
+        email: user.email,
+        userIdType: typeof user.id
+      });
+
+      // Validar que el user.id sea un UUID válido
+      if (!user.id || typeof user.id !== 'string') {
+        console.error('❌ Invalid user ID:', user.id);
+        return {
+          success: false,
+          error: 'Usuario no válido',
+          message: 'ID de usuario no encontrado o inválido'
+        };
+      }
+
+      const token = this.extractTokenFromRequest(req);
+      const sharedDocuments = await this.documentosService.getSharedWithMe(user.id, token);
+      
+      // Formato esperado por el frontend
+      return {
+        success: true,
+        data: sharedDocuments
+      };
+    } catch (error) {
+      console.error('Error in getSharedWithMe controller:', error);
+      return {
+        success: false,
+        error: 'Error al obtener documentos compartidos',
+        message: error.message
+      };
+    }
+  }
+
+  @Get('my-shared')
+  @HttpCode(HttpStatus.OK)
+  async getMySharedDocuments(@CurrentUser() user: SupabaseUser, @Req() req: Request) {
+    const token = this.extractTokenFromRequest(req);
+    
+    try {
+      const myShares = await this.documentosService.getMySharedDocuments(user.id, token);
+      return {
+        success: true,
+        data: myShares
+      };
+    } catch (error) {
+      console.error('Error in getMySharedDocuments:', error);
+      throw error;
+    }
+  }
+
   @Get(':id')
   findOne(
     @Param('id', ParseUUIDPipe) id: string,
@@ -218,22 +277,254 @@ export class DocumentosController {
   @Post(':id/verify')
   async verifyChecksum(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body('checksum') checksum: string,
     @CurrentUser() user: SupabaseUser,
     @Req() req: Request
   ) {
-    if (!checksum) {
-      throw new BadRequestException('Checksum is required');
-    }
     
     const token = this.extractTokenFromRequest(req);
-    const isValid = await this.documentosService.verifyChecksum(id, checksum, token);
+    const isValid = await this.documentosService.verifyChecksum(id, token);
     
     return {
       documentId: id,
-      providedChecksum: checksum,
       isValid,
       message: isValid ? 'Document integrity verified' : 'Document integrity check failed'
     };
+  }
+
+  // 🔐 NUEVOS ENDPOINTS PARA COMPARTIR DOCUMENTOS
+
+  @Post(':id/share')
+  @HttpCode(HttpStatus.CREATED)
+  async shareDocument(
+    @Param('id', ParseUUIDPipe) documentId: string,
+    @Body(ValidationPipe) shareDto: { sharedWithUserId: string; expiresAt?: string },
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    const token = this.extractTokenFromRequest(req);
+    return this.documentosService.shareDocument(
+      documentId,
+      shareDto.sharedWithUserId,
+      user.id,
+      token,
+      shareDto.expiresAt
+    );
+  }
+
+  @Delete(':id/share/:userId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async unshareDocument(
+    @Param('id', ParseUUIDPipe) documentId: string,
+    @Param('userId', ParseUUIDPipe) sharedWithUserId: string,
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    const token = this.extractTokenFromRequest(req);
+    return this.documentosService.unshareDocument(documentId, sharedWithUserId, user.id, token);
+  }
+
+  @Get(':id/shares')
+  async getDocumentShares(
+    @Param('id', ParseUUIDPipe) documentId: string,
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    const token = this.extractTokenFromRequest(req);
+    return this.documentosService.getDocumentShares(documentId, user.id, token);
+  }
+
+  // 🚀 NUEVOS ENDPOINTS PARA SISTEMA SEGURO DE COMPARTIR
+
+  @Post(':id/secure-share')
+  @HttpCode(HttpStatus.CREATED)
+  async createSecureShare(
+    @Param('id', ParseUUIDPipe) documentId: string,
+    @Body(ValidationPipe) shareDto: {
+      sharedWithUserId: string;
+      title?: string;
+      message?: string;
+      expiresAt?: string;
+    },
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    const token = this.extractTokenFromRequest(req);
+    return this.documentosService.createSecureShare(
+      documentId,
+      shareDto.sharedWithUserId,
+      user.id,
+      token,
+      shareDto.title,
+      shareDto.message,
+      shareDto.expiresAt
+    );
+  }
+
+  @Get('shared/:shareToken')
+  async getSecureSharedDocument(
+    @Param('shareToken') shareToken: string,
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    try {
+      const token = this.extractTokenFromRequest(req);
+      const sharedDocument = await this.documentosService.getSecureSharedDocument(shareToken, user.id, token);
+      
+      // El service ya devuelve el formato correcto con success: true
+      return sharedDocument;
+    } catch (error) {
+      console.error('Error in getSecureSharedDocument controller:', error);
+      return {
+        success: false,
+        error: 'Documento compartido no encontrado o acceso denegado',
+        message: error.message
+      };
+    }
+  }
+
+  @Delete('shares/:shareId/revoke')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async revokeShare(
+    @Param('shareId', ParseUUIDPipe) shareId: string,
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    const token = this.extractTokenFromRequest(req);
+    return this.documentosService.revokeShare(shareId, user.id, token);
+  }
+
+  // ============================================================================
+  // ENDPOINTS PARA ACCESO TEMPORAL USANDO document_shares
+  // ============================================================================
+
+  @Post('simple-share')
+  @HttpCode(HttpStatus.CREATED)
+  async simpleShareDocument(
+    @Body(ValidationPipe) shareDto: SimpleShareDto,
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    try {
+      const token = this.extractTokenFromRequest(req);
+      
+      console.log('📤 Simple share request:', {
+        documentId: shareDto.documentId,
+        sharedWithUserId: shareDto.sharedWithUserId,
+        sharedByUserId: user.id,
+        permissionLevel: shareDto.permissionLevel || 'read'
+      });
+
+      return await this.documentosService.simpleShareDocument(
+        shareDto.documentId,
+        shareDto.sharedWithUserId,
+        user.id,
+        shareDto.permissionLevel || 'read',
+        shareDto.expiresInHours || 24,
+        shareDto.shareTitle,
+        shareDto.shareMessage,
+        token
+      );
+    } catch (error) {
+      console.error('❌ Error in simpleShareDocument controller:', error);
+      return {
+        success: false,
+        error: 'Error al compartir documento',
+        message: error.message
+      };
+    }
+  }
+
+  @Get(':id/verify-share-access')
+  async verifyShareAccess(
+    @Param('id', ParseUUIDPipe) documentId: string,
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    const token = this.extractTokenFromRequest(req);
+    return this.documentosService.verifyDocumentShareAccess(
+      documentId,
+      user.id,
+      token
+    );
+  }
+
+  // ============================================================================
+  // ENDPOINTS ADICIONALES PARA COMPARTIR DOCUMENTOS
+  // ============================================================================
+
+  @Get(':id/permission-check')
+  @HttpCode(HttpStatus.OK)
+  async checkDocumentPermission(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('permission') permission: string = 'read',
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    const token = this.extractTokenFromRequest(req);
+    
+    try {
+      const hasPermission = await this.documentosService.checkDocumentPermission(
+        id,
+        user.id,
+        permission,
+        token
+      );
+      
+      return {
+        success: true,
+        hasPermission,
+        documentId: id,
+        userId: user.id,
+        permission
+      };
+    } catch (error) {
+      console.error('Error in checkDocumentPermission:', error);
+      throw error;
+    }
+  }
+
+  @Get(':id/with-permission-check')
+  @HttpCode(HttpStatus.OK)
+  async getDocumentWithPermissionCheck(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: SupabaseUser,
+    @Req() req: Request
+  ) {
+    const token = this.extractTokenFromRequest(req);
+    
+    try {
+      const document = await this.documentosService.getDocumentWithPermissionCheck(
+        id,
+        user.id,
+        token
+      );
+      
+      return {
+        success: true,
+        document
+      };
+    } catch (error) {
+      console.error('Error in getDocumentWithPermissionCheck:', error);
+      throw error;
+    }
+  }
+
+  @Post('cleanup-expired')
+  @HttpCode(HttpStatus.OK)
+  async cleanupExpiredShares(@CurrentUser() user: SupabaseUser, @Req() req: Request) {
+    const token = this.extractTokenFromRequest(req);
+    
+    try {
+      const cleanedCount = await this.documentosService.cleanupExpiredShares(token);
+      
+      return {
+        success: true,
+        message: `Se limpiaron ${cleanedCount} shares expirados`,
+        cleanedCount
+      };
+    } catch (error) {
+      console.error('Error in cleanupExpiredShares:', error);
+      throw error;
+    }
   }
 }
