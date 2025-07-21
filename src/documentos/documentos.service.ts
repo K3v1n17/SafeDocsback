@@ -236,9 +236,47 @@ export class DocumentosService {
     return data || [];
   }
 
-  async verifyChecksum(id: string, checksum: string, userToken: string): Promise<boolean> {
-    const documento = await this.findOne(id, userToken);
-    return documento.checksum_sha256 === checksum;
+  async verifyChecksum(id: string, userToken: string): Promise<boolean> {
+    const supabase = this.supabaseService.getClientWithAuth(userToken);
+
+    // 1. Obtener el documento para acceder al file_path
+    const { data: documento, error: docError } = await supabase
+      .from('documents')
+      .select('file_path')
+      .eq('id', id)
+      .single();
+    
+    if (docError || !documento) {
+      throw new NotFoundException(`Document with ID ${id} not found`);
+    }
+
+    const { data: verification, error: verificationError } = await supabase
+      .from('document_verifications')
+      .select('hash_checked')
+      .eq('document_id', id)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+
+    if (verificationError || !verification) {
+      throw new NotFoundException(`Checksum verification not found for document ID ${id}`);
+    }
+
+    // 2. Descargar el archivo desde Supabase Storage
+    const { data: fileData, error: fileError } = await supabase.storage
+      .from('archivos')
+      .download(documento.file_path);
+    
+    if (fileError || !fileData) {
+      throw new BadRequestException(`Error downloading file: ${fileError?.message || 'File not found'}`);
+    }
+
+    // 3. Calcular el checksum SHA256 del archivo descargado
+    const buffer = await fileData.arrayBuffer();
+    const documentoChecksum = crypto.createHash('sha256').update(Buffer.from(buffer)).digest('hex');
+
+    // 4. Comparar con el checksum recibido
+    return documentoChecksum === verification[0].hash_checked;
   }
 
   // Función para crear verificación inicial del documento
@@ -321,7 +359,7 @@ export class DocumentosService {
         file_size: file.size,
         file_path: filePath,
         ///file_url: publicUrlData.publicUrl,
-        checksum_sha256: checksum,
+        //checksum_sha256: checksum,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       };
@@ -360,6 +398,793 @@ export class DocumentosService {
         throw error;
       }
       throw new BadRequestException(`Error processing file upload: ${error.message}`);
+    }
+  }
+
+  // 🔐 NUEVO: Métodos para compartir documentos
+
+  async shareDocument(
+    documentId: string, 
+    sharedWithUserId: string, 
+    userId: string, 
+    userToken: string,
+    expiresAt?: string
+  ): Promise<any> {
+    const supabase = this.supabaseService.getClientWithAuth(userToken);
+
+    // Verificar que el usuario es el dueño del documento
+    const { data: document, error: docError } = await supabase
+      .from('documents')
+      .select('owner_id, title')
+      .eq('id', documentId)
+      .single();
+
+    if (docError || !document) {
+      throw new NotFoundException(`Document with ID ${documentId} not found`);
+    }
+
+    if (document.owner_id !== userId) {
+      throw new ForbiddenException('You can only share your own documents');
+    }
+
+    // Verificar que el usuario objetivo existe
+    const { data: targetUser, error: userError } = await supabase
+      .from('user_roles')
+      .select('user_id')
+      .eq('user_id', sharedWithUserId)
+      .single();
+
+    if (userError || !targetUser) {
+      throw new BadRequestException('Target user not found');
+    }
+
+    // Evitar auto-compartir
+    if (userId === sharedWithUserId) {
+      throw new BadRequestException('You cannot share a document with yourself');
+    }
+
+    // Crear el share
+    const shareData = {
+      document_id: documentId,
+      owner_id: userId,
+      shared_with_user_id: sharedWithUserId,
+      permission_level: 'read',
+      expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
+      is_active: true
+    };
+
+    const { data, error } = await supabase
+      .from('document_shares')
+      .insert([shareData])
+      .select(`
+        id,
+        document_id,
+        owner_id,
+        shared_with_user_id,
+        permission_level,
+        shared_at,
+        expires_at,
+        is_active
+      `)
+      .single();
+
+    if (error) {
+      if (error.code === '23505') { // Unique constraint violation
+        throw new BadRequestException('Document is already shared with this user');
+      }
+      throw new BadRequestException(`Error sharing document: ${error.message}`);
+    }
+
+    return data;
+  }
+
+  async unshareDocument(
+    documentId: string, 
+    sharedWithUserId: string, 
+    userId: string, 
+    userToken: string
+  ): Promise<void> {
+    const supabase = this.supabaseService.getClientWithAuth(userToken);
+
+    // Verificar que el usuario es el dueño
+    const { data: document, error: docError } = await supabase
+      .from('documents')
+      .select('owner_id')
+      .eq('id', documentId)
+      .single();
+
+    if (docError || !document) {
+      throw new NotFoundException(`Document with ID ${documentId} not found`);
+    }
+
+    if (document.owner_id !== userId) {
+      throw new ForbiddenException('You can only unshare your own documents');
+    }
+
+    // Eliminar el share
+    const { error } = await supabase
+      .from('document_shares')
+      .delete()
+      .eq('document_id', documentId)
+      .eq('shared_with_user_id', sharedWithUserId)
+      .eq('owner_id', userId);
+
+    if (error) {
+      throw new BadRequestException(`Error unsharing document: ${error.message}`);
+    }
+  }
+
+  async getDocumentShares(documentId: string, userId: string, userToken: string): Promise<any[]> {
+    const supabase = this.supabaseService.getClientWithAuth(userToken);
+
+    // Verificar que el usuario es el dueño del documento
+    const { data: document, error: docError } = await supabase
+      .from('documents')
+      .select('owner_id, title')
+      .eq('id', documentId)
+      .single();
+
+    if (docError || !document) {
+      throw new NotFoundException(`Document with ID ${documentId} not found`);
+    }
+
+    if (document.owner_id !== userId) {
+      throw new ForbiddenException('You can only view shares of your own documents');
+    }
+
+    // Obtener todos los shares del documento con información del usuario
+    const { data, error } = await supabase
+      .from('document_shares')
+      .select(`
+        id,
+        document_id,
+        shared_with_user_id,
+        permission_level,
+        shared_at,
+        expires_at,
+        is_active
+      `)
+      .eq('document_id', documentId)
+      .eq('owner_id', userId)
+      .eq('is_active', true);
+
+    if (error) {
+      throw new BadRequestException(`Error fetching document shares: ${error.message}`);
+    }
+
+    return data || [];
+  }
+
+  // 🔐 MÉTODOS PARA COMPARTIR DOCUMENTOS SEGUROS (Token + Usuario Registrado)
+
+  private generateShareToken(): string {
+    return crypto.createHash('sha256')
+      .update(`${Date.now()}-${Math.random()}-${uuidv4()}`)
+      .digest('hex');
+  }
+
+  async createSecureShare(
+    documentId: string,
+    sharedWithUserId: string,
+    userId: string,
+    userToken: string,
+    title?: string,
+    message?: string,
+    expiresAt?: string
+  ): Promise<any> {
+    const supabase = this.supabaseService.getClientWithAuth(userToken);
+
+    // 1. Verificar que el usuario es dueño del documento
+    const { data: document, error: docError } = await supabase
+      .from('documents')
+      .select('owner_id, title')
+      .eq('id', documentId)
+      .single();
+
+    if (docError || !document) {
+      throw new NotFoundException(`Document with ID ${documentId} not found`);
+    }
+
+    if (document.owner_id !== userId) {
+      throw new ForbiddenException('You can only share your own documents');
+    }
+
+    // 2. Verificar que el usuario objetivo existe y está activo
+    const { data: targetUser, error: userError } = await supabase
+      .from('user_roles')
+      .select('user_id, role')
+      .eq('user_id', sharedWithUserId)
+      .single();
+
+    if (userError || !targetUser) {
+      throw new BadRequestException('Target user not found or not active in the system');
+    }
+
+    // 3. Evitar auto-compartir
+    if (userId === sharedWithUserId) {
+      throw new BadRequestException('You cannot share a document with yourself');
+    }
+
+    // 4. Crear share con token seguro
+    const shareToken = this.generateShareToken();
+    
+    const shareData = {
+      document_id: documentId,
+      created_by: userId,
+      shared_with_user_id: sharedWithUserId, // ✅ Usuario específico
+      share_token: shareToken,
+      title: title || `Shared: ${document.title}`,
+      message: message || 'Document shared with you',
+      expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
+      is_active: true,
+      permission_level: 'read' // Solo lectura
+    };
+
+    const { data, error } = await supabase
+      .from('document_shares')
+      .insert([shareData])
+      .select(`
+        id,
+        document_id,
+        created_by,
+        shared_with_user_id,
+        share_token,
+        title,
+        message,
+        expires_at,
+        is_active,
+        permission_level,
+        created_at
+      `)
+      .single();
+
+    if (error) {
+      if (error.code === '23505') {
+        throw new BadRequestException('Document already shared with this user');
+      }
+      throw new BadRequestException(`Error creating share: ${error.message}`);
+    }
+
+    return {
+      ...data,
+      share_url: `${process.env.FRONTEND_URL}/shared/${shareToken}`
+    };
+  }
+
+  async getSecureSharedDocument(shareToken: string, viewerUserId: string, userToken: string): Promise<any> {
+    const supabase = this.supabaseService.getClientWithAuth(userToken);
+
+    // 1. Buscar el share y validar
+    const { data: share, error: shareError } = await supabase
+      .from('document_shares')
+      .select(`
+        id,
+        document_id,
+        created_by,
+        shared_with_user_id,
+        title,
+        message,
+        expires_at,
+        is_active,
+        permission_level,
+        created_at,
+        documents:document_id (
+          id,
+          title,
+          description,
+          doc_type,
+          mime_type,
+          file_size,
+          file_path,
+          owner_id,
+          created_at
+        )
+      `)
+      .eq('share_token', shareToken)
+      .eq('is_active', true)
+      .single();
+
+    if (shareError || !share) {
+      throw new NotFoundException('Share not found or has been revoked');
+    }
+
+    // 2. Verificar expiración
+    if (share.expires_at && new Date(share.expires_at) < new Date()) {
+      throw new BadRequestException('Share has expired');
+    }
+
+    // 3. ✅ Verificar que el usuario que accede es el destinatario autorizado
+    if (share.shared_with_user_id !== viewerUserId) {
+      throw new ForbiddenException('You are not authorized to view this shared document');
+    }
+
+    // 4. Registrar la vista
+    await this.recordSecureShareView(share.id, viewerUserId, userToken);
+
+    const doc = Array.isArray(share.documents) ? share.documents[0] : share.documents;
+    if (!doc || !doc.file_path) {
+      throw new BadRequestException('Documento no disponible para este usuario');
+    }
+
+    // 5. Generar URL firmada temporal para el archivo (si es CDN)
+    const signedFileUrl = await this.generateSignedFileUrl(userToken, doc.file_path);
+
+    return {
+      success: true,
+      data: {
+        share: {
+          id: share.id,
+          title: share.title,
+          message: share.message,
+          permission_level: share.permission_level,
+          created_at: share.created_at,
+          expires_at: share.expires_at
+        },
+        document: {
+          id: doc.id,
+          titulo: doc.title, // Campo esperado por frontend
+          contenido: doc.description,
+          tipo: doc.doc_type,
+          file_size: doc.file_size,
+          mime_type: doc.mime_type,
+          created_at: doc.created_at,
+          signed_file_url: signedFileUrl // ✅ URL temporal para descarga/vista
+        }
+      }
+    };
+  }
+
+  private async generateSignedFileUrl(userToken: string, filePath: string): Promise<string> {
+    try {
+      const supabase = this.supabaseService.getClientWithAuth(userToken); // ✅ cliente autenticado
+      const { data, error } = await supabase.storage
+        .from('archivos')
+        .createSignedUrl(filePath, 3600);
+
+      if (error || !data?.signedUrl) {
+        throw new BadRequestException('Error generating file access URL');
+      }
+
+      return data.signedUrl;
+    } catch (error) {
+      console.error('Error in generateSignedFileUrl:', error);
+      throw new BadRequestException('Error generating file access URL');
+    }
+  }
+
+  private async recordSecureShareView(shareId: string, viewerId: string, userToken: string): Promise<void> {
+    try {
+      const supabase = this.supabaseService.getClientWithAuth(userToken);
+      
+      await supabase
+        .from('document_share_views')
+        .insert([{
+          share_id: shareId,
+          viewer_id: viewerId,
+          viewed_at: new Date().toISOString()
+        }]);
+    } catch (error) {
+      console.error('Error recording share view:', error);
+      // No fallar por esto
+    }
+  }
+
+  async getMySharedDocuments(userId: string, userToken: string): Promise<any[]> {
+    const supabase = this.supabaseService.getClientWithAuth(userToken);
+
+    // Documentos que YO he compartido
+    const { data, error } = await supabase
+      .from('document_shares')
+      .select(`
+        id,
+        document_id,
+        shared_with_user_id,
+        share_token,
+        title,
+        message,
+        expires_at,
+        is_active,
+        created_at,
+        documents:document_id (
+          title,
+          doc_type
+        )
+      `)
+      .eq('created_by', userId)
+      .eq('is_active', true)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw new BadRequestException(`Error fetching shared documents: ${error.message}`);
+    }
+
+    return data || [];
+  }
+
+  // ============================================================================
+  // SISTEMA DE ACCESO TEMPORAL USANDO document_shares EXISTENTE
+  // ============================================================================
+
+  async getSharedWithMe(userId: string, userToken: string): Promise<any[]> {
+    const supabase = this.supabaseService.getClientWithAuth(userToken);
+
+    try {
+      console.log('🔍 Getting shared documents for user:', userId);
+      
+      // Consulta que aprovecha las nuevas políticas RLS
+      const { data: sharesData, error } = await supabase
+        .from('document_shares')
+        .select(`
+          id,
+          document_id,
+          created_by,
+          share_token,
+          title,
+          message,
+          permission_level,
+          expires_at,
+          is_active,
+          created_at,
+          shared_with_user_id
+        `)
+        .eq('shared_with_user_id', userId)
+        .eq('is_active', true)
+        .order('created_at', { ascending: false });
+
+      console.log('📋 document_shares query result:', { 
+        count: sharesData?.length || 0, 
+        error: error?.message 
+      });
+
+      if (error) {
+        console.error('❌ Error fetching shared documents:', error);
+        throw new BadRequestException(`Error fetching shared documents: ${error.message}`);
+      }
+
+      if (!sharesData || sharesData.length === 0) {
+        console.log('ℹ️ No shared documents found for user:', userId);
+        return [];
+      }
+
+      console.log('✅ Found shared documents:', sharesData.length);
+
+      // Obtener información de los documentos por separado
+      const documentIds = sharesData.map(share => share.document_id);
+      
+      const { data: documents, error: docsError } = await supabase
+        .from('documents')
+        .select('id, title, description, doc_type, created_at, owner_id')
+        .in('id', documentIds);
+
+      if (docsError) {
+        console.error('❌ Error fetching documents:', docsError);
+        throw new BadRequestException(`Error fetching documents: ${docsError.message}`);
+      }
+
+      // Mapear datos para compatibilidad con frontend
+      const mappedData = sharesData.map(share => {
+        const document = documents?.find(doc => doc.id === share.document_id);
+        const now = new Date();
+        const expiresAt = share.expires_at ? new Date(share.expires_at) : null;
+        const isExpired = expiresAt && expiresAt <= now;
+
+        return {
+          id: share.id,
+          document_id: share.document_id,
+          title: share.title || document?.title || 'Documento sin título',
+          description: share.message || document?.description || 'Sin descripción',
+          doc_type: document?.doc_type || 'unknown',
+          permission_level: share.permission_level,
+          shared_by: share.created_by,
+          expires_at: share.expires_at,
+          is_expired: isExpired,
+          created_at: share.created_at,
+          share_token: share.share_token,
+          document: document
+        };
+      });
+
+      console.log('📤 Returning mapped data:', mappedData.length);
+      return mappedData;
+
+    } catch (error) {
+      console.error('💥 Error in getSharedWithMe:', error);
+      throw new BadRequestException(`Error fetching shared documents: ${error.message || 'Unknown error'}`);
+    }
+  }
+
+  // ============================================================================
+  // MÉTODO SIMPLE PARA COMPARTIR DOCUMENTOS
+  // ============================================================================
+  async simpleShareDocument(
+    documentId: string,
+    sharedWithUserId: string,
+    sharedByUserId: string,
+    permissionLevel: string = 'read',
+    expiresInHours: number = 24,
+    shareTitle?: string,
+    shareMessage?: string,
+    userToken?: string
+  ): Promise<any> {
+    const supabase = userToken 
+      ? this.supabaseService.getClientWithAuth(userToken)
+      : this.supabaseService.getClient();
+
+    try {
+      console.log('🔗 Simple share document:', {
+        documentId,
+        sharedWithUserId,
+        sharedByUserId,
+        permissionLevel,
+        expiresInHours
+      });
+
+      // Verificar que el documento existe y el usuario tiene permisos
+      const { data: document, error: docError } = await supabase
+        .from('documents')
+        .select('id, title, owner_id')
+        .eq('id', documentId)
+        .single();
+
+      if (docError || !document) {
+        throw new BadRequestException('Documento no encontrado');
+      }
+
+      if (document.owner_id !== sharedByUserId) {
+        throw new BadRequestException('No tienes permisos para compartir este documento');
+      }
+
+      // Generar token único usando la función de la base de datos
+      const { data: tokenData, error: tokenError } = await supabase
+        .rpc('generate_share_token');
+
+      if (tokenError) {
+        console.error('❌ Error generating token:', tokenError);
+        throw new BadRequestException('Error generando token de compartir');
+      }
+
+      const shareToken = tokenData;
+
+      // Calcular fecha de expiración
+      const expiresAt = new Date();
+      expiresAt.setHours(expiresAt.getHours() + expiresInHours);
+
+      // Crear share directamente en la tabla (sin RLS problemas)
+      const { data: shareData, error: shareError } = await supabase
+        .from('document_shares')
+        .insert({
+          document_id: documentId,
+          shared_with_user_id: sharedWithUserId,
+          created_by: sharedByUserId,
+          share_token: shareToken,
+          title: shareTitle || document.title,
+          message: shareMessage || 'Documento compartido contigo',
+          permission_level: permissionLevel,
+          expires_at: expiresAt.toISOString(),
+          is_active: true
+        })
+        .select('*')
+        .single();
+
+      if (shareError) {
+        console.error('❌ Error creating share:', shareError);
+        
+        // Si es error de duplicado, intentar actualizar
+        if (shareError.code === '23505') {
+          console.log('🔄 Duplicate share found, updating...');
+          const { data: updateData, error: updateError } = await supabase
+            .from('document_shares')
+            .update({
+              share_token: shareToken,
+              title: shareTitle || document.title,
+              message: shareMessage || 'Documento compartido contigo',
+              permission_level: permissionLevel,
+              expires_at: expiresAt.toISOString(),
+              is_active: true,
+              updated_at: new Date().toISOString()
+            })
+            .eq('document_id', documentId)
+            .eq('shared_with_user_id', sharedWithUserId)
+            .select('*')
+            .single();
+
+          if (updateError) {
+            throw new BadRequestException(`Error al actualizar share: ${updateError.message}`);
+          }
+
+          return {
+            success: true,
+            message: 'Documento compartido exitosamente (actualizado)',
+            share: updateData,
+            share_token: shareToken
+          };
+        }
+
+        throw new BadRequestException(`Error al compartir documento: ${shareError.message}`);
+      }
+
+      console.log('✅ Share created successfully:', shareData);
+
+      return {
+        success: true,
+        message: 'Documento compartido exitosamente',
+        share: shareData,
+        share_token: shareToken
+      };
+
+    } catch (error) {
+      console.error('💥 Error in simpleShareDocument:', error);
+      throw new BadRequestException(`Error al compartir documento: ${error.message || 'Unknown error'}`);
+    }
+  }
+
+  // Verificar acceso usando document_shares
+  async verifyDocumentShareAccess(
+    documentId: string,
+    userId: string,
+    userToken?: string
+  ): Promise<any> {
+    const supabase = userToken 
+      ? this.supabaseService.getClientWithAuth(userToken)
+      : this.supabaseService.getClient();
+
+    try {
+      console.log('🔍 Verifying document share access:', { documentId, userId });
+
+      const { data, error } = await supabase
+        .rpc('verify_document_share_access', {
+          p_document_id: documentId,
+          p_user_id: userId
+        });
+
+      if (error) {
+        console.error('❌ Error verifying share access:', error);
+        throw new BadRequestException(`Error al verificar acceso: ${error.message}`);
+      }
+
+      console.log('✅ Access verification result:', data);
+      return data;
+
+    } catch (error) {
+      console.error('💥 Error in verifyDocumentShareAccess:', error);
+      throw new BadRequestException(`Error al verificar acceso: ${error.message || 'Unknown error'}`);
+    }
+  }
+
+  async revokeShare(shareId: string, userId: string, userToken: string): Promise<void> {
+    const supabase = this.supabaseService.getClientWithAuth(userToken);
+
+    // Solo el creador puede revocar
+    const { data: share, error: shareError } = await supabase
+      .from('document_shares')
+      .select('created_by')
+      .eq('id', shareId)
+      .single();
+
+    if (shareError || !share) {
+      throw new NotFoundException(`Share with ID ${shareId} not found`);
+    }
+
+    if (share.created_by !== userId) {
+      throw new ForbiddenException('You can only revoke shares you created');
+    }
+
+    const { error } = await supabase
+      .from('document_shares')
+      .update({ is_active: false })
+      .eq('id', shareId);
+
+    if (error) {
+      throw new BadRequestException(`Error revoking share: ${error.message}`);
+    }
+  }
+
+  // ============================================================================
+  // VERIFICACIÓN DE PERMISOS CON NUEVAS POLÍTICAS RLS
+  // ============================================================================
+  async checkDocumentPermission(
+    documentId: string,
+    userId: string,
+    requiredPermission: string = 'read',
+    userToken?: string
+  ): Promise<boolean> {
+    const supabase = userToken 
+      ? this.supabaseService.getClientWithAuth(userToken)
+      : this.supabaseService.getClient();
+
+    try {
+      console.log('🔐 Checking document permission:', {
+        documentId,
+        userId,
+        requiredPermission
+      });
+
+      const { data, error } = await supabase
+        .rpc('check_document_share_permission', {
+          doc_id: documentId,
+          user_id: userId,
+          required_permission: requiredPermission
+        });
+
+      if (error) {
+        console.error('❌ Error checking permission:', error);
+        return false;
+      }
+
+      console.log('✅ Permission check result:', data);
+      return data === true;
+
+    } catch (error) {
+      console.error('💥 Error in checkDocumentPermission:', error);
+      return false;
+    }
+  }
+
+  // Limpiar shares expirados
+  async cleanupExpiredShares(userToken?: string): Promise<number> {
+    const supabase = userToken 
+      ? this.supabaseService.getClientWithAuth(userToken)
+      : this.supabaseService.getClient();
+
+    try {
+      console.log('🧹 Cleaning up expired shares...');
+
+      const { data, error } = await supabase
+        .rpc('cleanup_expired_shares');
+
+      if (error) {
+        console.error('❌ Error cleaning up expired shares:', error);
+        return 0;
+      }
+
+      console.log('✅ Cleaned up expired shares:', data);
+      return data || 0;
+
+    } catch (error) {
+      console.error('💥 Error in cleanupExpiredShares:', error);
+      return 0;
+    }
+  }
+
+  // ============================================================================
+  // OBTENER DOCUMENTOS COMPARTIDOS CON PERMISOS
+  // ============================================================================
+  async getDocumentWithPermissionCheck(
+    documentId: string,
+    userId: string,
+    userToken: string
+  ): Promise<any> {
+    const supabase = this.supabaseService.getClientWithAuth(userToken);
+
+    try {
+      // Verificar permiso antes de obtener el documento
+      const hasPermission = await this.checkDocumentPermission(
+        documentId,
+        userId,
+        'read',
+        userToken
+      );
+
+      if (!hasPermission) {
+        throw new ForbiddenException('No tienes permisos para ver este documento');
+      }
+
+      // Obtener el documento
+      const { data, error } = await supabase
+        .from('documents')
+        .select('*')
+        .eq('id', documentId)
+        .single();
+
+      if (error) {
+        throw new BadRequestException(`Error fetching document: ${error.message}`);
+      }
+
+      return data;
+
+    } catch (error) {
+      console.error('💥 Error in getDocumentWithPermissionCheck:', error);
+      throw error;
     }
   }
 }
