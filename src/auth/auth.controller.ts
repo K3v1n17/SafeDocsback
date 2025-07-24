@@ -1,21 +1,26 @@
-import { Controller, Get, Post, Body, UseGuards, Req, Res, ValidationPipe, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Body, UseGuards, Req, Res, ValidationPipe, HttpCode, HttpStatus, Logger } from '@nestjs/common';
 import { Response, Request } from 'express';
 import { SupabaseAuthGuard } from './supabase-auth.guard';
 import { CurrentUser } from './current-user.decorator';
 import { SupabaseUser } from './supabase-user.interface';
 import { SupabaseService } from '../supabase/supabase.service';
 import { LoginDto, RegisterDto, RefreshTokenDto } from './dto/auth.dto';
+import { ErrorHandlerService, ErrorResponse, SuccessResponse } from '../common/error-handler.service';
+import { ValidationService } from '../common/validation.service';
+import { SecureConfigService } from '../config/secure-config.service';
 
-interface AuthResponse {
-  success: boolean;
-  data?: any;
-  error?: string;
-  message?: string;
-}
+type AuthResponse = ErrorResponse | SuccessResponse;
 
 @Controller('auth')
 export class AuthController {
-  constructor(private supabaseService: SupabaseService) {}
+  private readonly logger = new Logger(AuthController.name);
+  
+  constructor(
+    private supabaseService: SupabaseService,
+    private errorHandler: ErrorHandlerService,
+    private validationService: ValidationService,
+    private secureConfig: SecureConfigService,
+  ) {}
 
   @Get('me')
   @UseGuards(SupabaseAuthGuard)
@@ -186,7 +191,7 @@ export class AuthController {
     }
   }
 
-  // 🔐 Login con cookies HttpOnly
+  // 🔐 Login con cookies HttpOnly y validación mejorada
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(
@@ -194,74 +199,78 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response
   ): Promise<AuthResponse> {
     try {
+      // Validar entrada de datos
+      const validatedDto = await this.validationService.validateDto(LoginDto, loginDto);
+      
+      // Sanitizar email
+      const sanitizedEmail = this.validationService.sanitizeText(validatedDto.email);
+      if (!this.validationService.isValidEmail(sanitizedEmail)) {
+        this.errorHandler.logSecurityEvent('Invalid email format in login attempt', { email: sanitizedEmail }, 'medium');
+        return this.errorHandler.handleError(new Error('Invalid email format'), 'login');
+      }
+
       const supabase = this.supabaseService.getClient();
       
       // Autenticación con Supabase
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: loginDto.email,
-        password: loginDto.password,
+        email: sanitizedEmail,
+        password: validatedDto.password,
       });
 
       if (error) {
-        console.error('Login error:', error.message);
+        this.errorHandler.logSecurityEvent('Login attempt failed', { 
+          email: sanitizedEmail, 
+          error: error.message 
+        }, 'medium');
         
-        // Mapear errores comunes a mensajes amigables
+        // Mapear errores comunes a mensajes seguros
         let errorMessage = 'Credenciales inválidas';
         if (error.message.includes('Email not confirmed')) {
           errorMessage = 'Por favor confirma tu email antes de iniciar sesión';
-        } else if (error.message.includes('Invalid login credentials')) {
-          errorMessage = 'Email o contraseña incorrectos';
         }
         
-        return {
-          success: false,
-          error: errorMessage
-        };
+        return this.errorHandler.handleError(new Error(errorMessage), 'login');
       }
 
       if (!data.user || !data.session) {
-        return {
-          success: false,
-          error: 'Error de autenticación'
-        };
+        return this.errorHandler.handleError(new Error('Authentication failed'), 'login');
       }
 
       // 🍪 Configurar cookies HttpOnly SEGURAS
       this.setSecureCookies(response, data.session);
 
-      // Obtener rol del usuario desde tu base de datos
+      // Obtener rol del usuario desde la base de datos
       const userRole = await this.getUserRole(data.user.id);
 
       // Crear o actualizar el perfil del usuario si no existe
       await this.ensureUserProfile(data.user);
 
+      // Log evento de seguridad exitoso
+      this.errorHandler.logSecurityEvent('Successful login', { 
+        userId: data.user.id, 
+        email: sanitizedEmail 
+      }, 'low');
+
       // ✅ Solo devolver datos del usuario (SIN tokens)
-      return {
-        success: true,
-        data: {
-          user: {
-            id: data.user.id,
-            email: data.user.email,
-            username: data.user.user_metadata?.username,
-            name: data.user.user_metadata?.name || data.user.user_metadata?.full_name,
-            role: userRole || 'owner',
-            created_at: data.user.created_at,
-            updated_at: data.user.updated_at || data.user.created_at,
-            email_confirmed: data.user.email_confirmed_at ? true : false,
-          }
-          // 🚫 NO enviar session en el response body
+      return this.errorHandler.createSuccessResponse({
+        user: {
+          id: data.user.id,
+          email: data.user.email,
+          username: data.user.user_metadata?.username,
+          name: data.user.user_metadata?.name || data.user.user_metadata?.full_name,
+          role: userRole || 'owner',
+          created_at: data.user.created_at,
+          updated_at: data.user.updated_at || data.user.created_at,
+          email_confirmed: data.user.email_confirmed_at ? true : false,
         }
-      };
+      });
     } catch (error) {
-      console.error('Login internal error:', error);
-      return {
-        success: false,
-        error: 'Error interno del servidor'
-      };
+      this.errorHandler.logSecurityEvent('Login internal error', { error: error.message }, 'high');
+      return this.errorHandler.handleError(error, 'login');
     }
   }
 
-  // 🔐 Register con cookies HttpOnly
+  // 🔐 Register con cookies HttpOnly y validación mejorada
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
   async register(
@@ -269,23 +278,43 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response
   ): Promise<AuthResponse> {
     try {
+      // Validar entrada de datos
+      const validatedDto = await this.validationService.validateDto(RegisterDto, registerDto);
+      
+      // Sanitizar datos de entrada
+      const sanitizedEmail = this.validationService.sanitizeText(validatedDto.email);
+      const sanitizedUsername = this.validationService.sanitizeText(validatedDto.username);
+      const sanitizedName = this.validationService.sanitizeText(validatedDto.name);
+      
+      // Validaciones adicionales
+      if (!this.validationService.isValidEmail(sanitizedEmail)) {
+        return this.errorHandler.handleError(new Error('Invalid email format'), 'register');
+      }
+      
+      if (!this.validationService.isAlphanumericSafe(sanitizedUsername)) {
+        return this.errorHandler.handleError(new Error('Username contains invalid characters'), 'register');
+      }
+
       const supabase = this.supabaseService.getClient();
       
       // Registro con Supabase
       const { data, error } = await supabase.auth.signUp({
-        email: registerDto.email,
-        password: registerDto.password,
+        email: sanitizedEmail,
+        password: validatedDto.password,
         options: {
           data: {
-            username: registerDto.username,
-            name: registerDto.name,
-            full_name: registerDto.name,
+            username: sanitizedUsername,
+            name: sanitizedName,
+            full_name: sanitizedName,
           }
         }
       });
 
       if (error) {
-        console.error('Register error:', error.message);
+        this.errorHandler.logSecurityEvent('Registration attempt failed', { 
+          email: sanitizedEmail, 
+          error: error.message 
+        }, 'medium');
         
         let errorMessage = 'Error en el registro';
         if (error.message.includes('User already registered')) {
@@ -294,57 +323,49 @@ export class AuthController {
           errorMessage = 'La contraseña es muy débil';
         }
         
-        return {
-          success: false,
-          error: errorMessage
-        };
+        return this.errorHandler.handleError(new Error(errorMessage), 'register');
       }
 
       if (!data.user) {
-        return {
-          success: false,
-          error: 'Error en el registro'
-        };
+        return this.errorHandler.handleError(new Error('Registration failed'), 'register');
       }
 
-      // 🍪 Si hay sesión (auto-login), configurar cookies
-      //if (data.session) {
-      //  this.setSecureCookies(response, data.session);
-      //}
-
       // Crear perfil inicial del usuario
-      await this.createUserProfile(data.user, registerDto);
+      await this.createUserProfile(data.user, {
+        email: sanitizedEmail,
+        username: sanitizedUsername,
+        name: sanitizedName,
+        password: '' // No almacenar password
+      });
       
       // Asignar rol por defecto
       await this.assignDefaultRole(data.user.id);
 
-      return {
-        success: true,
-        data: {
-          user: {
-            id: data.user.id,
-            email: data.user.email,
-            username: registerDto.username,
-            name: registerDto.name,
-            role: 'owner',
-            created_at: data.user.created_at,
-            updated_at: data.user.updated_at || data.user.created_at,
-            email_confirmed: false,
-          }
-          // 🚫 NO enviar session
-        },
-        message: 'Registro exitoso. Por favor verifica tu email.'
-      };
+      // Log evento de seguridad exitoso
+      this.errorHandler.logSecurityEvent('Successful registration', { 
+        userId: data.user.id, 
+        email: sanitizedEmail 
+      }, 'low');
+
+      return this.errorHandler.createSuccessResponse({
+        user: {
+          id: data.user.id,
+          email: data.user.email,
+          username: sanitizedUsername,
+          name: sanitizedName,
+          role: 'owner',
+          created_at: data.user.created_at,
+          updated_at: data.user.updated_at || data.user.created_at,
+          email_confirmed: false,
+        }
+      }, 'Registro exitoso. Por favor verifica tu email.');
     } catch (error) {
-      console.error('Register internal error:', error);
-      return {
-        success: false,
-        error: 'Error interno del servidor'
-      };
+      this.errorHandler.logSecurityEvent('Registration internal error', { error: error.message }, 'high');
+      return this.errorHandler.handleError(error, 'register');
     }
   }
 
-  // 🔐 Refresh token usando cookies
+  // 🔐 Refresh token usando cookies con validación mejorada
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   async refreshToken(
@@ -355,8 +376,9 @@ export class AuthController {
       // 🍪 Obtener refresh token de cookies
       const refreshToken = request.cookies?.refresh_token;
       
-      if (!refreshToken) {
-        return { success: false, error: 'No hay token de refresco' };
+      if (!refreshToken || typeof refreshToken !== 'string') {
+        this.errorHandler.logSecurityEvent('Refresh token missing', {}, 'medium');
+        return this.errorHandler.handleError(new Error('No refresh token'), 'refresh');
       }
 
       const supabase = this.supabaseService.getClient();
@@ -366,14 +388,15 @@ export class AuthController {
       });
 
       if (error) {
+        this.errorHandler.logSecurityEvent('Refresh token failed', { error: error.message }, 'medium');
         // 🧹 Limpiar cookies si el refresh falló
         this.clearSecureCookies(response);
-        return { success: false, error: 'Token de refresco inválido' };
+        return this.errorHandler.handleError(new Error('Invalid refresh token'), 'refresh');
       }
 
       if (!data.user || !data.session) {
         this.clearSecureCookies(response);
-        return { success: false, error: 'Error refrescando sesión' };
+        return this.errorHandler.handleError(new Error('Session refresh failed'), 'refresh');
       }
 
       // 🍪 Actualizar cookies con nuevos tokens
@@ -381,29 +404,31 @@ export class AuthController {
 
       const userRole = await this.getUserRole(data.user.id);
 
-      return {
-        success: true,
-        data: {
-          user: {
-            id: data.user.id,
-            email: data.user.email,
-            username: data.user.user_metadata?.username,
-            name: data.user.user_metadata?.name || data.user.user_metadata?.full_name,
-            role: userRole || 'owner',
-            created_at: data.user.created_at,
-            updated_at: data.user.updated_at || data.user.created_at,
-            email_confirmed: true,
-          }
+      // Log evento exitoso
+      this.errorHandler.logSecurityEvent('Token refreshed successfully', { 
+        userId: data.user.id 
+      }, 'low');
+
+      return this.errorHandler.createSuccessResponse({
+        user: {
+          id: data.user.id,
+          email: data.user.email,
+          username: data.user.user_metadata?.username,
+          name: data.user.user_metadata?.name || data.user.user_metadata?.full_name,
+          role: userRole || 'owner',
+          created_at: data.user.created_at,
+          updated_at: data.user.updated_at || data.user.created_at,
+          email_confirmed: true,
         }
-      };
+      });
     } catch (error) {
-      console.error('Refresh token error:', error);
+      this.errorHandler.logSecurityEvent('Refresh token internal error', { error: error.message }, 'high');
       this.clearSecureCookies(response);
-      return { success: false, error: 'Error interno del servidor' };
+      return this.errorHandler.handleError(error, 'refresh');
     }
   }
 
-  // 🔐 Logout limpiando cookies
+  // 🔐 Logout limpiando cookies de forma segura
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   async logout(@Res({ passthrough: true }) response: Response): Promise<AuthResponse> {
@@ -411,16 +436,14 @@ export class AuthController {
       // 🧹 Limpiar cookies HttpOnly
       this.clearSecureCookies(response);
       
-      return {
-        success: true,
-        data: { message: 'Sesión cerrada exitosamente' }
-      };
+      this.errorHandler.logSecurityEvent('User logged out', {}, 'low');
+      
+      return this.errorHandler.createSuccessResponse({ 
+        message: 'Sesión cerrada exitosamente' 
+      });
     } catch (error) {
-      console.error('Logout error:', error);
-      return {
-        success: false,
-        error: 'Error cerrando sesión'
-      };
+      this.errorHandler.logSecurityEvent('Logout error', { error: error.message }, 'medium');
+      return this.errorHandler.handleError(error, 'logout');
     }
   }
 
@@ -428,22 +451,26 @@ export class AuthController {
   // MÉTODOS HELPER ADICIONALES
   // ===========================================
 
-  // 🛡️ Configurar cookies seguras
+  // 🛡️ Configurar cookies seguras con configuración mejorada
   private setSecureCookies(response: Response, session: any): void {
-    const isProduction = process.env.NODE_ENV === 'production';
-    const cookieDomain = process.env.COOKIE_DOMAIN;
+    if (!session?.access_token || !session?.refresh_token) {
+      throw new Error('Invalid session data for cookie setting');
+    }
+
+    const isProduction = this.secureConfig.isProduction();
+    const cookieDomain = this.secureConfig.getCookieDomain();
     
-    // 🎯 Configuración específica para Vercel/producción
+    // 🎯 Configuración específica para producción vs desarrollo
     const baseCookieOptions = {
       httpOnly: true,           // 🔒 No accesible desde JavaScript
       path: '/',
-      domain: undefined as string | undefined, // � NO usar domain en Vercel
+      domain: isProduction && cookieDomain ? cookieDomain : undefined,
     };
 
-    // �️ Configuración condicional según el entorno
+    // 🛡️ Configuración condicional según el entorno
     const cookieOptions = isProduction ? {
       ...baseCookieOptions,
-      secure: true,             // � SIEMPRE HTTPS en producción
+      secure: true,             // 🔒 SIEMPRE HTTPS en producción
       sameSite: 'none' as const, // 🔒 Para dominios cruzados
     } : {
       ...baseCookieOptions,
@@ -451,39 +478,43 @@ export class AuthController {
       sameSite: 'lax' as const, // 🔒 Más permisivo en desarrollo
     };
 
-    console.log('🍪 Cookie config:', {
+    this.logger.log('Setting secure cookies', {
       isProduction,
       cookieDomain,
       secure: cookieOptions.secure,
       sameSite: cookieOptions.sameSite,
-      domain: cookieOptions.domain
     });
 
-    // Access token (15 minutos)
-    response.cookie('access_token', session.access_token, {
-      ...cookieOptions,
-      maxAge: 15 * 60 * 1000, // 15 minutos
-    });
+    try {
+      // Access token (15 minutos)
+      response.cookie('access_token', session.access_token, {
+        ...cookieOptions,
+        maxAge: 15 * 60 * 1000, // 15 minutos
+      });
 
-    // Refresh token (7 días)
-    response.cookie('refresh_token', session.refresh_token, {
-      ...cookieOptions,
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 días
-    });
+      // Refresh token (7 días)
+      response.cookie('refresh_token', session.refresh_token, {
+        ...cookieOptions,
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 días
+      });
 
-    console.log('🍪 Cookies seguras configuradas con opciones:', cookieOptions);
+      this.logger.log('Secure cookies set successfully');
+    } catch (error) {
+      this.logger.error('Error setting cookies', error);
+      throw new Error('Failed to set secure cookies');
+    }
   }
 
-  // 🧹 Limpiar cookies
+  // 🧹 Limpiar cookies de forma segura
   private clearSecureCookies(response: Response): void {
-    const isProduction = process.env.NODE_ENV === 'production';
-    const cookieDomain = process.env.COOKIE_DOMAIN;
+    const isProduction = this.secureConfig.isProduction();
+    const cookieDomain = this.secureConfig.getCookieDomain();
     
     // 🎯 Misma configuración que setSecureCookies para limpiar correctamente
     const baseCookieOptions = {
       httpOnly: true,
       path: '/',
-      domain: undefined as string | undefined, // 🚫 NO usar domain en Vercel
+      domain: isProduction && cookieDomain ? cookieDomain : undefined,
     };
 
     const cookieOptions = isProduction ? {
@@ -496,134 +527,175 @@ export class AuthController {
       sameSite: 'lax' as const,
     };
 
-    response.clearCookie('access_token', cookieOptions);
-    response.clearCookie('refresh_token', cookieOptions);
-    
-    console.log('🧹 Cookies limpiadas con opciones:', cookieOptions);
+    try {
+      response.clearCookie('access_token', cookieOptions);
+      response.clearCookie('refresh_token', cookieOptions);
+      
+      this.logger.log('Cookies cleared successfully');
+    } catch (error) {
+      this.logger.error('Error clearing cookies', error);
+    }
   }
 
   private async ensureUserProfile(user: any): Promise<void> {
+    if (!user?.id) {
+      this.logger.warn('Invalid user data provided to ensureUserProfile');
+      return;
+    }
+
     try {
       const supabase = this.supabaseService.getClient();
       
       // Verificar si el perfil ya existe
-      const { data: existingProfile } = await supabase
+      const { data: existingProfile, error: selectError } = await supabase
         .from('profiles')
         .select('user_id')
         .eq('user_id', user.id)
         .single();
 
+      if (selectError && selectError.code !== 'PGRST116') { // PGRST116 = not found
+        this.logger.error('Error checking existing profile', selectError);
+        return;
+      }
+
       if (!existingProfile) {
-        // Crear perfil si no existe
-        await supabase
+        // Crear perfil si no existe con datos sanitizados
+        const profileData = {
+          user_id: user.id,
+          full_name: this.validationService.sanitizeText(
+            user.user_metadata?.name || user.user_metadata?.full_name || ''
+          ),
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+
+        const { error: insertError } = await supabase
           .from('profiles')
-          .insert([{
-            user_id: user.id,
-            full_name: user.user_metadata?.name || user.user_metadata?.full_name || '',
-            created_at: new Date(),
-            updated_at: new Date()
-          }]);
+          .insert([profileData]);
+
+        if (insertError) {
+          this.logger.error('Error creating user profile', insertError);
+        } else {
+          this.logger.log(`Profile created for user ${user.id}`);
+        }
       }
     } catch (error) {
-      console.error('Error ensuring user profile:', error);
+      this.logger.error('Exception in ensureUserProfile', error);
     }
   }
 
-  private async createUserProfile(user: any, registerDto: RegisterDto): Promise<void> {
+  private async createUserProfile(user: any, registerData: { email: string; username: string; name: string; password: string }): Promise<void> {
+    if (!user?.id || !registerData?.name) {
+      this.logger.warn('Invalid data provided to createUserProfile');
+      return;
+    }
+
     try {
       const supabase = this.supabaseService.getClient();
       
-      await supabase
+      const profileData = {
+        user_id: user.id,
+        full_name: this.validationService.sanitizeText(registerData.name),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+
+      const { error } = await supabase
         .from('profiles')
-        .insert([{
-          user_id: user.id,
-          full_name: registerDto.name,
-          created_at: new Date(),
-          updated_at: new Date()
-        }]);
+        .insert([profileData]);
+
+      if (error) {
+        this.logger.error('Error creating user profile during registration', error);
+        throw new Error('Failed to create user profile');
+      }
+
+      this.logger.log(`Profile created for new user ${user.id}`);
     } catch (error) {
-      console.error('Error creating user profile:', error);
+      this.logger.error('Exception in createUserProfile', error);
+      throw error;
     }
   }
 
   private async assignDefaultRole(userId: string): Promise<void> {
+    if (!userId || !this.validationService.isValidUUID(userId)) {
+      this.logger.warn('Invalid userId provided to assignDefaultRole');
+      return;
+    }
+
     try {
       const supabase = this.supabaseService.getClient();
       
-      await supabase
+      const roleData = {
+        user_id: userId,
+        role: 'owner',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+
+      const { error } = await supabase
         .from('user_roles')
-        .insert([{
-          user_id: userId,
-          role: 'owner',
-          created_at: new Date(),
-          updated_at: new Date()
-        }]);
+        .insert([roleData]);
+
+      if (error) {
+        this.logger.error('Error assigning default role', error);
+        throw new Error('Failed to assign default role');
+      }
+
+      this.logger.log(`Default role assigned to user ${userId}`);
     } catch (error) {
-      console.error('Error assigning default role:', error);
+      this.logger.error('Exception in assignDefaultRole', error);
+      throw error;
     }
   }
 
   private async getUserRole(userId: string, request?: any): Promise<string | null> {
+    if (!userId || !this.validationService.isValidUUID(userId)) {
+      this.logger.warn('Invalid userId provided to getUserRole');
+      return null;
+    }
+
     try {
-      console.log(`🔍 Getting role for user: ${userId}`);
+      this.logger.log(`Getting role for user: ${userId}`);
       
       // 🔑 Extraer token desde cookies HttpOnly si está disponible
       let supabase = this.supabaseService.getClient();
       
       if (request?.cookies?.access_token) {
         const accessToken = request.cookies.access_token;
-        console.log('🔑 Using authenticated client with token from cookies');
-        supabase = this.supabaseService.getClientWithAuth(accessToken);
+        try {
+          supabase = this.supabaseService.getClientWithAuth(accessToken);
+          this.logger.log('Using authenticated client with token from cookies');
+        } catch (error) {
+          this.logger.warn('Failed to create authenticated client, using default');
+        }
       }
       
-      console.log('📡 Supabase client initialized');
-      
-      // 🔍 Verificar el usuario autenticado actual
-      const { data: { user }, error: authError } = await supabase.auth.getUser();
-      console.log('👤 Current authenticated user:', {
-        id: user?.id,
-        email: user?.email,
-        searching_for: userId,
-        is_same_user: user?.id === userId
-      });
-      
-      if (authError) {
-        console.error('❌ Auth error:', authError);
-      }
-      
-      // 🔍 Consulta directa con más logging
-      console.log('📊 Executing query on user_roles...');
+      // 🔍 Consulta con manejo de errores mejorado
       const { data, error } = await supabase
         .from('user_roles')
-        .select('*') // Seleccionar todo para ver qué devuelve
-        .eq('user_id', userId);
-      
-      console.log('📋 Query result:', { data, error });
+        .select('role')
+        .eq('user_id', userId)
+        .single();
       
       if (error) {
-        console.error('❌ Error getting user role:', error);
+        if (error.code === 'PGRST116') { // Not found
+          this.logger.log(`No role found for user: ${userId}`);
+          return null;
+        }
+        this.logger.error('Database error getting user role', error);
         return null;
       }
       
-      if (!data || data.length === 0) {
-        console.log(`⚠️ No role found for user: ${userId}`);
-        console.log('🔍 Available roles in DB (first 5):');
-        
-        // Consultar todos los roles para ver si hay alguno
-        const { data: allRoles } = await supabase
-          .from('user_roles')
-          .select('user_id, role')
-          .limit(5);
-        
-        console.log('Available roles:', allRoles);
+      if (!data?.role) {
+        this.logger.log(`No role data for user: ${userId}`);
         return null;
       }
       
-      const role = data[0].role;
-      console.log(`✅ Role found for user ${userId}: ${role}`);
+      const role = data.role;
+      this.logger.log(`Role found for user ${userId}: ${role}`);
       return role;
     } catch (error) {
-      console.error('💥 Exception getting user role:', error);
+      this.logger.error('Exception getting user role', error);
       return null;
     }
   }
