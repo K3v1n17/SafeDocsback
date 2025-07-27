@@ -3,7 +3,6 @@ import {
   Get, 
   Post, 
   Body, 
-  Patch, 
   Param, 
   Delete, 
   Query, 
@@ -21,9 +20,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { Request } from 'express';
 import { DocumentosService } from './documentos.service';
 import { CreateDocumentoDto } from './dto/create-documento.dto';
-import { UpdateDocumentoDto } from './dto/update-documento.dto';
 import { UploadDocumentDto } from './dto/upload-documento.dto';
-import { ShareDocumentDto, UnshareDocumentDto } from './dto/share-document.dto';
 import { SimpleShareDto } from './dto/share-document-adapted.dto';
 import { SupabaseAuthGuard } from '../auth/supabase-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
@@ -42,10 +39,10 @@ export class DocumentosController {
       return cookieToken;
     }
 
-    // 🔑 FALLBACK: Intentar obtener token del header Authorization (para compatibilidad con frontend)
+    //  FALLBACK: Intentar obtener token del header Authorization (para compatibilidad con frontend)
     const [type, token] = req.headers.authorization?.split(' ') ?? [];
     if (type === 'Bearer' && token) {
-      console.log('🔑 Token obtenido de Authorization header en DocumentosController (fallback)');
+      console.log(' Token obtenido de Authorization header en DocumentosController (fallback)');
       return token;
     }
 
@@ -122,11 +119,8 @@ export class DocumentosController {
       description: uploadData.description || uploadData.contenido || `Archivo subido: ${file.originalname}`,
       doc_type: uploadData.doc_type || uploadData.tipo || this.getDocumentTypeFromMime(file.mimetype),
       tags: uploadData.tags || (uploadData.etiquetas ? JSON.parse(uploadData.etiquetas) : []),
-      owner_id: user.id,
-      mime_type: file.mimetype,
-      file_size: file.size,
-      file_path: '', // Se asignará en el servicio
-      checksum_sha256: '' // Se calculará en el servicio
+      owner_id: user.id
+      // Los campos mime_type, file_size, file_path y checksum_sha256 se asignan en el servicio
     };
     
     return this.documentosService.createWithFile(createDocumentoDto, file, token);
@@ -146,34 +140,8 @@ export class DocumentosController {
     return typeMap[mimeType] || 'archivo';
   }
 
-
-
-  @Get('my-documents')
-  findMyDocuments(@CurrentUser() user: SupabaseUser, @Req() req: Request) {
-    // Endpoint específico para obtener MIS documentos (como propietario)
-    // Usa el user.id del token, no necesita parámetros
-    const token = this.extractTokenFromRequest(req);
-    return this.documentosService.findByOwner(user.id, token);
-  }
-
-  @Get('tags')
-  findByTags(
-    @Query('tags') tags: string,
-    @CurrentUser() user: SupabaseUser,
-    @Req() req: Request
-  ) {
-    if (!tags) {
-      throw new BadRequestException('Tags parameter is required');
-    }
-    const tagArray = tags.split(',').map(tag => tag.trim());
-    const token = this.extractTokenFromRequest(req);
-    return this.documentosService.findByTags(tagArray, token);
-  }
-
   @Get('search')
   searchDocuments(
-    @Query('q') query: string,
-    @CurrentUser() user: SupabaseUser,
     @Req() req: Request
   ) {
     // Endpoint para búsqueda futura - por ahora solo devuelve todos
@@ -242,144 +210,11 @@ export class DocumentosController {
   @Get(':id')
   findOne(
     @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() user: SupabaseUser,
     @Req() req: Request
   ) {
     // Supabase RLS se encarga de verificar permisos
     const token = this.extractTokenFromRequest(req);
     return this.documentosService.findOne(id, token);
-  }
-
-  @Patch(':id')
-  update(
-    @Param('id', ParseUUIDPipe) id: string, 
-    @Body(ValidationPipe) updateDocumentoDto: UpdateDocumentoDto,
-    @CurrentUser() user: SupabaseUser,
-    @Req() req: Request
-  ) {
-    // Supabase RLS permitirá la actualización solo si el usuario tiene permisos
-    const token = this.extractTokenFromRequest(req);
-    return this.documentosService.update(id, updateDocumentoDto, user.id, token);
-  }
-
-  @Delete(':id')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  remove(
-    @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() user: SupabaseUser,
-    @Req() req: Request
-  ) {
-    // Supabase RLS permitirá la eliminación solo si el usuario tiene permisos
-    const token = this.extractTokenFromRequest(req);
-    return this.documentosService.remove(id, user.id, token);
-  }
-
-  @Post(':id/verify')
-  async verifyChecksum(
-    @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() user: SupabaseUser,
-    @Req() req: Request
-  ) {
-    
-    const token = this.extractTokenFromRequest(req);
-    const isValid = await this.documentosService.verifyChecksum(id, token);
-    
-    return {
-      documentId: id,
-      isValid,
-      message: isValid ? 'Document integrity verified' : 'Document integrity check failed'
-    };
-  }
-
-  // 🔐 NUEVOS ENDPOINTS PARA COMPARTIR DOCUMENTOS
-
-  @Post(':id/share')
-  @HttpCode(HttpStatus.CREATED)
-  async shareDocument(
-    @Param('id', ParseUUIDPipe) documentId: string,
-    @Body(ValidationPipe) shareDto: { sharedWithUserId: string; expiresAt?: string },
-    @CurrentUser() user: SupabaseUser,
-    @Req() req: Request
-  ) {
-    const token = this.extractTokenFromRequest(req);
-    return this.documentosService.shareDocument(
-      documentId,
-      shareDto.sharedWithUserId,
-      user.id,
-      token,
-      shareDto.expiresAt
-    );
-  }
-
-  @Delete(':id/share/:userId')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  async unshareDocument(
-    @Param('id', ParseUUIDPipe) documentId: string,
-    @Param('userId', ParseUUIDPipe) sharedWithUserId: string,
-    @CurrentUser() user: SupabaseUser,
-    @Req() req: Request
-  ) {
-    const token = this.extractTokenFromRequest(req);
-    return this.documentosService.unshareDocument(documentId, sharedWithUserId, user.id, token);
-  }
-
-  @Get(':id/shares')
-  async getDocumentShares(
-    @Param('id', ParseUUIDPipe) documentId: string,
-    @CurrentUser() user: SupabaseUser,
-    @Req() req: Request
-  ) {
-    const token = this.extractTokenFromRequest(req);
-    return this.documentosService.getDocumentShares(documentId, user.id, token);
-  }
-
-  // 🚀 NUEVOS ENDPOINTS PARA SISTEMA SEGURO DE COMPARTIR
-
-  @Post(':id/secure-share')
-  @HttpCode(HttpStatus.CREATED)
-  async createSecureShare(
-    @Param('id', ParseUUIDPipe) documentId: string,
-    @Body(ValidationPipe) shareDto: {
-      sharedWithUserId: string;
-      title?: string;
-      message?: string;
-      expiresAt?: string;
-    },
-    @CurrentUser() user: SupabaseUser,
-    @Req() req: Request
-  ) {
-    const token = this.extractTokenFromRequest(req);
-    return this.documentosService.createSecureShare(
-      documentId,
-      shareDto.sharedWithUserId,
-      user.id,
-      token,
-      shareDto.title,
-      shareDto.message,
-      shareDto.expiresAt
-    );
-  }
-
-  @Get('shared/:shareToken')
-  async getSecureSharedDocument(
-    @Param('shareToken') shareToken: string,
-    @CurrentUser() user: SupabaseUser,
-    @Req() req: Request
-  ) {
-    try {
-      const token = this.extractTokenFromRequest(req);
-      const sharedDocument = await this.documentosService.getSecureSharedDocument(shareToken, user.id, token);
-      
-      // El service ya devuelve el formato correcto con success: true
-      return sharedDocument;
-    } catch (error) {
-      console.error('Error in getSecureSharedDocument controller:', error);
-      return {
-        success: false,
-        error: 'Documento compartido no encontrado o acceso denegado',
-        message: error.message
-      };
-    }
   }
 
   @Delete('shares/:shareId/revoke')

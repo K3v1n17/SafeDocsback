@@ -1,7 +1,5 @@
 import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
 import { DocumentosModule } from './documentos/documentos.module';
 import { AuthModule } from './auth/auth.module';
 import { SharedSecurityModule } from './shared/shared-security.module';
@@ -20,8 +18,8 @@ import { RateLimitMiddleware } from './common/rate-limit.middleware';
     AuthModule,
     DocumentosModule,
   ],
-  controllers: [AppController],
-  providers: [AppService],
+  controllers: [],
+  providers: [],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {

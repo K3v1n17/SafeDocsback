@@ -3,13 +3,29 @@ import { CreateDocumentoDto } from './dto/create-documento.dto';
 import { UpdateDocumentoDto } from './dto/update-documento.dto';
 import { SupabaseService } from '../supabase/supabase.service';
 import { Documento } from './entities/documento.entity';
-import { SupabaseUser } from '../auth/supabase-user.interface';
 import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class DocumentosService {
   constructor(private supabaseService: SupabaseService) {}
+
+  // 🔧 Método privado para logging consistente
+  private logOperation(operation: string, details: any, level: 'info' | 'warn' | 'error' = 'info'): void {
+    const timestamp = new Date().toISOString();
+    const message = `[${timestamp}] DocumentosService::${operation}`;
+    
+    switch (level) {
+      case 'error':
+        console.error(`❌ ${message}`, details);
+        break;
+      case 'warn':
+        console.warn(`⚠️ ${message}`, details);
+        break;
+      default:
+        console.log(`ℹ️ ${message}`, details);
+    }
+  }
 
   // 🔐 Verificar si el usuario es admin
   private async isAdmin(userId: string, userToken: string): Promise<boolean> {
@@ -22,7 +38,7 @@ export class DocumentosService {
       .single();
 
     if (error) {
-      console.log('Error checking user role:', error);
+      this.logOperation('isAdmin', { userId, error: error.message }, 'error');
       return false;
     }
 
@@ -255,8 +271,8 @@ export class DocumentosService {
       .select('hash_checked')
       .eq('document_id', id)
       .order('created_at', { ascending: false })
-      .limit(1);
-
+      .limit(1)
+      .single();
 
     if (verificationError || !verification) {
       throw new NotFoundException(`Checksum verification not found for document ID ${id}`);
@@ -276,7 +292,7 @@ export class DocumentosService {
     const documentoChecksum = crypto.createHash('sha256').update(Buffer.from(buffer)).digest('hex');
 
     // 4. Comparar con el checksum recibido
-    return documentoChecksum === verification[0].hash_checked;
+    return documentoChecksum === verification.hash_checked;
   }
 
   // Función para crear verificación inicial del documento
@@ -343,7 +359,7 @@ export class DocumentosService {
         throw new BadRequestException(`Error uploading file: ${uploadError.message}`);
       }
 
-      // 4. Obtener la URL pública del archivo
+      // 4. Obtener la URL pública del archivo (para referencia futura si es necesario)
       const { data: publicUrlData } = supabase.storage
         .from('archivos')
         .getPublicUrl(filePath);
@@ -358,8 +374,8 @@ export class DocumentosService {
         mime_type: file.mimetype,
         file_size: file.size,
         file_path: filePath,
-        ///file_url: publicUrlData.publicUrl,
-        //checksum_sha256: checksum,
+        file_url: publicUrlData?.publicUrl || null,
+        checksum_sha256: checksum,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       };
@@ -372,9 +388,15 @@ export class DocumentosService {
 
       if (error) {
         // Si hay error al crear el documento, eliminar el archivo subido
-        await supabase.storage
-          .from('archivos')
-          .remove([filePath]);
+        console.error('Error creating document, cleaning up uploaded file:', error);
+        try {
+          await supabase.storage
+            .from('archivos')
+            .remove([filePath]);
+          console.log('Successfully cleaned up uploaded file after document creation error');
+        } catch (cleanupError) {
+          console.error('Error cleaning up uploaded file:', cleanupError);
+        }
         
         throw new BadRequestException(`Error creating document: ${error.message}`);
       }
@@ -446,7 +468,7 @@ export class DocumentosService {
     // Crear el share
     const shareData = {
       document_id: documentId,
-      owner_id: userId,
+      created_by: userId,
       shared_with_user_id: sharedWithUserId,
       permission_level: 'read',
       expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
@@ -459,10 +481,10 @@ export class DocumentosService {
       .select(`
         id,
         document_id,
-        owner_id,
+        created_by,
         shared_with_user_id,
         permission_level,
-        shared_at,
+        created_at,
         expires_at,
         is_active
       `)
@@ -507,7 +529,7 @@ export class DocumentosService {
       .delete()
       .eq('document_id', documentId)
       .eq('shared_with_user_id', sharedWithUserId)
-      .eq('owner_id', userId);
+      .eq('created_by', userId);
 
     if (error) {
       throw new BadRequestException(`Error unsharing document: ${error.message}`);
@@ -540,12 +562,12 @@ export class DocumentosService {
         document_id,
         shared_with_user_id,
         permission_level,
-        shared_at,
+        created_at,
         expires_at,
         is_active
       `)
       .eq('document_id', documentId)
-      .eq('owner_id', userId)
+      .eq('created_by', userId)
       .eq('is_active', true);
 
     if (error) {
@@ -734,14 +756,15 @@ export class DocumentosService {
     };
   }
 
-  private async generateSignedFileUrl(userToken: string, filePath: string): Promise<string> {
+  private async generateSignedFileUrl(userToken: string, filePath: string, expiresIn: number = 3600): Promise<string> {
     try {
-      const supabase = this.supabaseService.getClientWithAuth(userToken); // ✅ cliente autenticado
+      const supabase = this.supabaseService.getClientWithAuth(userToken);
       const { data, error } = await supabase.storage
         .from('archivos')
-        .createSignedUrl(filePath, 3600);
+        .createSignedUrl(filePath, expiresIn);
 
       if (error || !data?.signedUrl) {
+        console.error('Error generating signed URL:', error);
         throw new BadRequestException('Error generating file access URL');
       }
 
@@ -906,6 +929,19 @@ export class DocumentosService {
     shareMessage?: string,
     userToken?: string
   ): Promise<any> {
+    // Validar parámetros de entrada
+    if (!documentId || !sharedWithUserId || !sharedByUserId) {
+      throw new BadRequestException('Parámetros requeridos faltantes: documentId, sharedWithUserId, sharedByUserId');
+    }
+
+    if (sharedWithUserId === sharedByUserId) {
+      throw new BadRequestException('No puedes compartir un documento contigo mismo');
+    }
+
+    if (expiresInHours <= 0 || expiresInHours > 8760) { // Máximo 1 año
+      throw new BadRequestException('El tiempo de expiración debe estar entre 1 hora y 1 año');
+    }
+
     const supabase = userToken 
       ? this.supabaseService.getClientWithAuth(userToken)
       : this.supabaseService.getClient();
@@ -1088,6 +1124,12 @@ export class DocumentosService {
     requiredPermission: string = 'read',
     userToken?: string
   ): Promise<boolean> {
+    // Validar parámetros de entrada
+    if (!documentId || !userId) {
+      console.error('❌ Invalid parameters for permission check:', { documentId, userId });
+      return false;
+    }
+
     const supabase = userToken 
       ? this.supabaseService.getClientWithAuth(userToken)
       : this.supabaseService.getClient();
