@@ -249,7 +249,7 @@ export class AuthController {
             updated_at: data.user.updated_at || data.user.created_at,
             email_confirmed: data.user.email_confirmed_at ? true : false,
           }
-          // 🚫 NO enviar session en el response body
+          // NO envia session en el response body
         }
       };
     } catch (error) {

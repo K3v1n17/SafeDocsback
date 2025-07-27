@@ -1,4 +1,4 @@
-// 🔒 SupabaseAuthGuard actualizado para cookies HttpOnly
+// SupabaseAuthGuard  para cookies HttpOnly
 import { Injectable, CanActivate, ExecutionContext, UnauthorizedException } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 
@@ -156,7 +156,7 @@ export class SupabaseAuthGuard implements CanActivate {
     const cookieOptions = {
       httpOnly: true,
       secure: isProduction,
-      sameSite: 'lax' as const, // Cambiado a 'lax' para desarrollo local
+      sameSite: 'lax' as const, // 'lax' para desarrollo local
       path: '/',
       domain: isProduction ? process.env.COOKIE_DOMAIN : undefined,
     };

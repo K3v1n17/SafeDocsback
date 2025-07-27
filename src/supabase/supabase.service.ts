@@ -17,7 +17,7 @@ export class SupabaseService {
     return this.supabase;
   }
 
-  // 🔑 Método para obtener cliente con token de usuario específico
+  //  Método para obtener cliente con token de usuario específico
   getClientWithAuth(accessToken: string): SupabaseClient {
     const authenticatedClient = createClient(
       this.configService.get<string>('SUPABASE_URL') || '',
@@ -34,7 +34,7 @@ export class SupabaseService {
     return authenticatedClient;
   }
 
-  // 🔑 Método para establecer sesión en el cliente existente
+  // Método para establecer sesión en el cliente existente
   async setSession(accessToken: string, refreshToken: string) {
     const { data, error } = await this.supabase.auth.setSession({
       access_token: accessToken,

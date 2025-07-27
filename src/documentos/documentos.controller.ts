@@ -93,19 +93,16 @@ export class DocumentosController {
       throw new BadRequestException('No file uploaded');
     }
 
-    // Validar tipo de archivo
-    const allowedMimeTypes = [
-      'application/pdf',
-      'application/msword',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'text/plain',
-      'image/jpeg',
-      'image/png',
-      'image/gif'
-    ];
+    // Solo permitir PDFs
+    if (file.mimetype !== 'application/pdf') {
+      throw new BadRequestException('Solo se permiten archivos PDF');
+    }
 
-    if (!allowedMimeTypes.includes(file.mimetype)) {
-      throw new BadRequestException('File type not allowed');
+    // Validar magic number (PDF: 0x25 0x50 0x44 0x46 0x2D => %PDF-)
+    const pdfMagicNumber = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2D]);
+    const fileBuffer = file.buffer || (file.stream ? await this.streamToBuffer(file.stream) : null);
+    if (!fileBuffer || !fileBuffer.slice(0, 5).equals(pdfMagicNumber)) {
+      throw new BadRequestException('El archivo no es un PDF válido (magic number incorrecto)');
     }
 
     // Validar tamaño del archivo (10MB máximo)
@@ -115,7 +112,7 @@ export class DocumentosController {
     }
 
     const token = this.extractTokenFromRequest(req);
-    
+
     // Crear el DTO para el servicio usando las propiedades correctas
     const createDocumentoDto: CreateDocumentoDto = {
       title: uploadData.title || uploadData.titulo || file.originalname,
@@ -128,8 +125,17 @@ export class DocumentosController {
       file_path: '', // Se asignará en el servicio
       checksum_sha256: '' // Se calculará en el servicio
     };
-    
+
     return this.documentosService.createWithFile(createDocumentoDto, file, token);
+  }
+
+  // Utilidad para convertir un stream a buffer (por si file viene como stream)
+  private async streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
   }
 
   private getDocumentTypeFromMime(mimeType: string): string {
