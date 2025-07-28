@@ -40,7 +40,6 @@ export class SupabaseService {
   getClient(): SupabaseClient {
     return this.supabase;
   }
-
   /**
    * Crea un cliente Supabase autenticado con token de usuario específico
    * @param accessToken Token de acceso JWT válido

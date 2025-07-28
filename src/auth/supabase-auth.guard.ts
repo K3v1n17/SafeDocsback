@@ -187,7 +187,7 @@ export class SupabaseAuthGuard implements CanActivate {
         return { success: false };
       }
 
-      // 🍪 Actualizar cookies con nuevos tokens
+      //  Actualizar cookies con nuevos tokens
       this.setSecureCookies(response, data.session);
       
       this.logger.debug('Tokens refreshed automatically');

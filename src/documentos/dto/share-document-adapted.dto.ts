@@ -1,4 +1,12 @@
+
 import { IsUUID, IsOptional, IsString, IsBoolean, IsNumber, IsEnum } from 'class-validator';
+
+export enum PermissionLevel {
+  READ = 'read',
+  COMMENT = 'comment',
+  WRITE = 'write',
+  ADMIN = 'admin',
+}
 
 // DTO para el endpoint simple-share
 export class SimpleShareDto {
@@ -8,9 +16,9 @@ export class SimpleShareDto {
   @IsUUID()
   sharedWithUserId: string;
 
-  @IsEnum(['read', 'write', 'admin'])
+  @IsEnum(PermissionLevel)
   @IsOptional()
-  permissionLevel?: string = 'read';
+  permissionLevel?: PermissionLevel = PermissionLevel.READ;
 
   @IsNumber()
   @IsOptional()
