@@ -21,19 +21,20 @@ export class CreateDocumentoDto {
   @IsOptional()
   tags?: string[];
 
+  // Los siguientes campos se generan automáticamente en el servicio
   @IsString()
-  @IsNotEmpty()
-  mime_type: string;
+  @IsOptional()
+  mime_type?: string;
 
   @IsNumber()
-  @IsNotEmpty()
-  file_size: number;
+  @IsOptional()
+  file_size?: number;
 
   @IsString()
-  @IsNotEmpty()
-  file_path: string;
+  @IsOptional()
+  file_path?: string;
 
   @IsString()
-  @IsNotEmpty()
-  checksum_sha256: string;
+  @IsOptional()
+  checksum_sha256?: string;
 }
