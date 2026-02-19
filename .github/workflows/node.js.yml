@@ -1,0 +1,39 @@
+name: Construcción y Despliegue de NestJS con SonarCloud
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  ci:
+    name: 🧪 Integración Continua (CI)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js version
+        uses: actions/setup-node@v3
+        with:
+          node-version: '22.x'
+
+      - name: pnpm install, build, and test
+        run: |
+          npm install -g pnpm@latest-10
+          pnpm install
+          pnpm run build 
+          pnpm run test --passWithNoTests
+
+      - name: 🔍 Analizar con SonarCloud
+        uses: SonarSource/sonarqube-scan-action@v3
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: 'https://sonarcloud.io'
+        with:
+          args: >
+            -Dsonar.organization=eriikjg
+            -Dsonar.projectKey=EriikJG_SafeDocsback
+            -Dsonar.projectName=SafeDocsback
+            -Dsonar.sources=src
+            -Dsonar.verbose=true
